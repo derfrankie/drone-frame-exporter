@@ -8,7 +8,8 @@ from core.gpx import GpxTrackIndex
 from core.models import GpxPoint, VideoMetadata
 from core.utils import ensure_utc
 
-SYNC_MODE_MANUAL_OFFSET = "manual-offset"
+SYNC_MODE_OFFSET = "offset"
+SYNC_MODE_MANUAL_OFFSET = SYNC_MODE_OFFSET
 SYNC_MODE_RELATIVE_START = "relative-start"
 SYNC_MODE_ABSOLUTE_VIDEO = "absolute-video"
 
@@ -59,9 +60,9 @@ def _resolve_base_timestamp(
     offset_seconds: float | None,
     relative_start_time: datetime | None,
 ) -> tuple[datetime, float | None]:
-    if sync_mode == SYNC_MODE_MANUAL_OFFSET:
+    if sync_mode in {SYNC_MODE_MANUAL_OFFSET, "manual-offset"}:
         if offset_seconds is None:
-            raise SyncConfigurationError("Manual offset mode requires --offset-seconds.")
+            raise SyncConfigurationError("Offset mode requires --offset-seconds.")
         if video_metadata.creation_time is not None:
             base = ensure_utc(video_metadata.creation_time) + timedelta(seconds=offset_seconds)
             return base, offset_seconds

@@ -5,12 +5,15 @@ Local-first macOS tool for extracting selected JPG frames from drone videos, syn
 ## MVP Scope
 
 - Select a local video file, GPX file, and output directory
+- Determine export frames visually, not by entering arbitrary timestamps as the primary workflow
+- Export only individual photos, never full image sequences
 - Configure time sync with either:
   - manual offset between video time and GPX time
   - relative start time where video `00:00:00` maps to a chosen GPX timestamp
 - Export selected frames as JPG via `ffmpeg`
 - Write `DateTimeOriginal`, GPS latitude/longitude, and optional altitude via `exiftool`
 - Write a JSON or CSV manifest per export
+- Show a simple map-based location view so the current video/frame position can be understood spatially
 - Run fully offline on macOS
 
 ## Technical Decisions
@@ -45,27 +48,29 @@ pip install -e ".[dev]"
 
 ## CLI Usage
 
-Export two frames using a manual offset:
+The CLI remains a support tool for validating the export pipeline.
+The primary end-user workflow for choosing photos should move into the UI, where frames are selected visually on a scrubber/timeline.
+
+Export frames using the primary MVP interface:
 
 ```bash
-drone-frame-extractor export \
+python -m app.main export \
   --video /path/to/video.mp4 \
   --gpx /path/to/track.gpx \
-  --output-dir /path/to/output \
-  --frame 12.5 \
-  --frame 37.2 \
-  --sync-mode manual-offset \
-  --offset-seconds 4.25
+  --out /path/to/output \
+  --times 12.5,44.2,91.0 \
+  --sync-mode offset \
+  --offset-seconds 37
 ```
 
 Export using a relative GPX start time:
 
 ```bash
-drone-frame-extractor export \
+python -m app.main export \
   --video /path/to/video.mp4 \
   --gpx /path/to/track.gpx \
-  --output-dir /path/to/output \
-  --frame 8.0 \
+  --out /path/to/output \
+  --times 8.0,12.0 \
   --sync-mode relative-start \
   --start-time 2025-06-01T08:30:00Z
 ```
@@ -73,11 +78,11 @@ drone-frame-extractor export \
 Generate a CSV manifest instead of JSON:
 
 ```bash
-drone-frame-extractor export \
+python -m app.main export \
   --video /path/to/video.mp4 \
   --gpx /path/to/track.gpx \
-  --output-dir /path/to/output \
-  --frame 3.5 \
+  --out /path/to/output \
+  --times 3.5 \
   --manifest-format csv
 ```
 
@@ -120,6 +125,25 @@ drone-frame-extractor/
 - Initial MVP uses the nearest GPX point; interpolation is intentionally deferred.
 - If the video has no trustworthy creation timestamp, the CLI still works with manual offset or relative start time.
 - Timestamps are normalized to UTC internally when GPX timestamps include timezone data.
+- The final product should optimize for selecting a few best stills from a video, not for bulk frame extraction.
+- A lightweight map panel is required in the UI so the user can see where the current frame is located along the GPX track.
+
+## UI Direction
+
+- Phase 2 remains a `PySide6` desktop UI on top of the existing core services.
+- The UI should stay as platform-agnostic as practical even though macOS is the first target.
+- Visual design should align with `https://onyx.scharz`.
+- The UI should center around:
+  - video preview with scrubber
+  - single-photo marker selection
+  - simple map-based geolocation preview for the current frame
+
+## Local Sample Media
+
+- Real test assets are available in `media/`.
+- Current sample files:
+  - `media/HOVER_20250611_1749636341404.MP4`
+  - `media/2025-06-11_2315554315_Gravel-Fahrt.gpx`
 
 ## Next Steps
 
@@ -127,6 +151,7 @@ drone-frame-extractor/
   - file selection
   - Qt multimedia preview
   - timeline markers
+  - simple map panel for frame location
   - export job progress
 - optional GPX interpolation between track points
 - packaged macOS app bundle

@@ -13,7 +13,7 @@ from core.gpx import load_gpx_track
 from core.models import ExportFrameRequest
 from core.sync import (
     SYNC_MODE_ABSOLUTE_VIDEO,
-    SYNC_MODE_MANUAL_OFFSET,
+    SYNC_MODE_OFFSET,
     SYNC_MODE_RELATIVE_START,
 )
 from core.video import inspect_video
@@ -55,11 +55,18 @@ def inspect_gpx_command(gpx: Path = typer.Option(..., exists=True, dir_okay=Fals
 def export_command(
     video: Path = typer.Option(..., exists=True, dir_okay=False, file_okay=True),
     gpx: Path = typer.Option(..., exists=True, dir_okay=False, file_okay=True),
-    output_dir: Path = typer.Option(..., file_okay=False, dir_okay=True),
-    frame: list[float] = typer.Option(..., help="Repeat --frame for each video position in seconds."),
+    output_dir: Path = typer.Option(..., "--out", file_okay=False, dir_okay=True),
+    times: str | None = typer.Option(
+        None,
+        help="Comma-separated video times in seconds, for example 12.5,44.2,91.0.",
+    ),
+    frame: list[float] = typer.Option(
+        None,
+        help="Optional compatibility mode: repeat --frame for each video position in seconds.",
+    ),
     sync_mode: str = typer.Option(
-        SYNC_MODE_MANUAL_OFFSET,
-        help="manual-offset, relative-start, or absolute-video",
+        SYNC_MODE_OFFSET,
+        help="offset, relative-start, or absolute-video",
     ),
     offset_seconds: float | None = typer.Option(None, help="Used in manual-offset mode."),
     start_time: str | None = typer.Option(
@@ -70,12 +77,11 @@ def export_command(
 ) -> None:
     """Export selected frames, write EXIF, and generate a manifest."""
     try:
-        if not frame:
-            raise typer.BadParameter("Repeat --frame with at least one video time in seconds.")
+        frame_values = _parse_frame_values(times=times, frame=frame)
         video_metadata = inspect_video(video)
         gpx_index = load_gpx_track(gpx)
         relative_start_time = _parse_iso_datetime(start_time) if start_time else None
-        frame_requests = [ExportFrameRequest(frame_seconds=value) for value in frame]
+        frame_requests = [ExportFrameRequest(frame_seconds=value) for value in frame_values]
         records, manifest_path = export_frames(
             video_metadata=video_metadata,
             gpx_index=gpx_index,
@@ -117,6 +123,21 @@ def export_command(
 def _parse_iso_datetime(value: str) -> datetime:
     normalized = value.replace("Z", "+00:00")
     return datetime.fromisoformat(normalized)
+
+
+def _parse_frame_values(times: str | None, frame: list[float] | None) -> list[float]:
+    if times:
+        try:
+            values = [float(part.strip()) for part in times.split(",") if part.strip()]
+        except ValueError as exc:
+            raise typer.BadParameter("--times must contain only comma-separated numbers.") from exc
+        if values:
+            return values
+
+    if frame:
+        return frame
+
+    raise typer.BadParameter("Provide either --times or one or more --frame values.")
 
 
 def main() -> None:

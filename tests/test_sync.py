@@ -4,7 +4,7 @@ from pathlib import Path
 from core.gpx import GpxTrackIndex
 from core.models import GpxPoint, VideoMetadata
 from core.sync import (
-    SYNC_MODE_MANUAL_OFFSET,
+    SYNC_MODE_OFFSET,
     SYNC_MODE_RELATIVE_START,
     resolve_frame_time,
 )
@@ -27,7 +27,7 @@ def test_manual_offset_uses_video_creation_time_when_available() -> None:
         ]
     )
 
-    resolved = resolve_frame_time(10.0, video, gpx, SYNC_MODE_MANUAL_OFFSET, offset_seconds=1.0)
+    resolved = resolve_frame_time(10.0, video, gpx, SYNC_MODE_OFFSET, offset_seconds=1.0)
 
     assert resolved.resolved_timestamp == datetime(2025, 1, 1, 12, 0, 11, tzinfo=timezone.utc)
     assert resolved.gpx_point.latitude == 48.2
