@@ -1,57 +1,190 @@
 # Drone Frame Extractor
 
-Local-first macOS tool for extracting selected JPG frames from drone videos, syncing them against GPX tracks, and writing GPS-aware EXIF metadata.
+Local-first desktop tool for extracting individual JPG stills from drone videos, matching them to GPX tracks, and writing timestamp and GPS metadata into the exported images.
 
-## MVP Scope
+This project is built for workflows where you want to scrub through a video, pick only a few good frames, align the video against a GPX track, and export geotagged photos without uploading anything to a cloud service.
 
-- Select a local video file, GPX file, and output directory
-- Determine export frames visually, not by entering arbitrary timestamps as the primary workflow
-- Export only individual photos, never full image sequences
-- Configure time sync with either:
-  - manual offset between video time and GPX time
-  - relative start time where video `00:00:00` maps to a chosen GPX timestamp
-- Export selected frames as JPG via `ffmpeg`
-- Write `DateTimeOriginal`, GPS latitude/longitude, and optional altitude via `exiftool`
-- Write a JSON or CSV manifest per export
-- Show a simple map-based location view so the current video/frame position can be understood spatially
-- Run fully offline on macOS
+## Status
 
-## Technical Decisions
+This repository is currently an MVP.
 
-- Python + `PySide6` is a good fit for the local desktop MVP:
-  - native-enough desktop UX on macOS
-  - solid file dialogs and timeline-friendly widgets
-  - easy reuse of the same core services between CLI and UI
-- CLI first, UI second:
-  - the export and sync pipeline becomes testable before we add player controls
-  - the later UI can call the same `core/*` modules
-- Planned preview approach for the UI MVP: `Qt Multimedia`
-  - simpler for a responsive scrubber/player than building a custom ffmpeg thumbnail transport
-  - keeps frame export authoritative through `ffmpeg`, while playback stays in Qt
-  - if codec support becomes unreliable for a specific drone format, we can add ffmpeg-backed preview thumbnails later without changing the export core
+What already works:
 
-## External Tools
+- local video + GPX loading
+- PySide6 desktop UI for visual frame selection
+- single-photo marker workflow
+- frame stepping by `1` and `5` frames
+- GPX alignment with reference mode selection
+- hour shift and second offset controls
+- JPG export through `ffmpeg`
+- EXIF timestamp and GPS writing through `exiftool`
+- JSON or CSV manifest export
+- zoomable online map with OpenStreetMap tiles in the UI
 
-Install these tools on macOS before using the CLI:
+Current limitations:
+
+- playback performance depends on codec/container support in Qt Multimedia
+- GPX matching currently uses the nearest GPX point, not interpolation
+- macOS is the primary tested platform right now
+- the map uses online tiles, so internet access is required for the basemap
+
+## Why This Exists
+
+Many drone videos contain usable still frames, but turning them into clean, timestamped, geotagged JPGs is awkward. This tool tries to make that workflow direct:
+
+1. load a video
+2. load a GPX track
+3. visually scrub to the frames you want
+4. align video time against GPX time
+5. export only the selected stills
+
+## Features
+
+- Local-first workflow
+  - no uploads
+  - no cloud processing
+  - local file selection and local export
+- Visual still selection
+  - video scrubber
+  - add/remove individual photo markers
+  - step playhead by `1` or `5` frames
+- GPX-aware sync workflow
+  - `video-first` or `gpx-first` reference mode
+  - second-level offset
+  - fixed hour shift selection
+  - relative-start and absolute-video modes
+- Map-based positioning
+  - zoomable OpenStreetMap-based track view
+  - GPX cursor and video-position visualization
+  - click/scrub on the track to help alignment
+- Export pipeline
+  - JPG extraction with `ffmpeg`
+  - EXIF metadata via `exiftool`
+  - JSON or CSV manifest
+  - optional custom filename middle segment
+
+## Tech Stack
+
+- Python 3.11+
+- PySide6
+- ffmpeg / ffprobe
+- gpxpy
+- exiftool
+- typer
+- rich
+
+## Installation
+
+### 1. Install system tools
+
+On macOS with Homebrew:
 
 ```bash
 brew install ffmpeg exiftool
 ```
 
-## Setup
+### 2. Clone the repository
+
+```bash
+git clone <your-repo-url>
+cd hover-frame-extractor
+```
+
+### 3. Create a virtual environment
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
+python -m pip install --upgrade pip
 pip install -e ".[dev]"
+```
+
+### 4. Verify the installation
+
+```bash
+python -m app.main --help
+pytest
+```
+
+## Quick Start
+
+Launch the desktop UI:
+
+```bash
+python -m app.main ui
+```
+
+## Desktop UI Workflow
+
+### 1. Load files
+
+- choose a video file
+- choose a GPX file
+- choose an output folder
+
+### 2. Set the sync model
+
+The UI exposes two concepts that matter:
+
+- `Reference`
+  - `video-first`: interpret the offset from the video timeline toward the GPX timeline
+  - `gpx-first`: interpret the offset from the GPX timeline toward the video timeline
+- `Shift Hours`
+  - coarse timezone/daylight-saving style correction
+  - currently offered as a fixed dropdown from `-5 h` to `+5 h`
+
+You can then refine with:
+
+- `Offset`: precise offset in seconds
+- `Relative Start`: map video time `00:00:00` to a chosen GPX time when using `relative-start`
+
+### 3. Scrub visually
+
+- drag the video playhead
+- use `-1 Frame`, `+1 Frame`, `-5 Frames`, `+5 Frames`
+- add photo markers only on the frames you want to export
+
+### 4. Use the map for alignment
+
+- inspect the current video position against the GPX track
+- move the GPX cursor with the track controls
+- use `Align Current Video Frame To GPX Cursor` to derive shift/offset values
+
+### 5. Export
+
+- choose JPG quality
+- optionally provide a filename middle segment
+- export the selected photos
+
+Example output filename:
+
+```text
+HOVER_20250611_1749636341404_hero_2025-06-01_08-30-00.jpg
+```
+
+Example manifest filename:
+
+```text
+HOVER_20250611_1749636341404_hero_export.json
 ```
 
 ## CLI Usage
 
-The CLI remains a support tool for validating the export pipeline.
-The primary end-user workflow for choosing photos should move into the UI, where frames are selected visually on a scrubber/timeline.
+The CLI is useful for inspection, debugging, scripted exports, and validating the sync pipeline. The main end-user workflow is the desktop UI.
 
-Export frames using the primary MVP interface:
+### Inspect video metadata
+
+```bash
+python -m app.main inspect-video --video /path/to/video.mp4
+```
+
+### Inspect GPX timing
+
+```bash
+python -m app.main inspect-gpx --gpx /path/to/track.gpx
+```
+
+### Export selected frames
 
 ```bash
 python -m app.main export \
@@ -60,10 +193,14 @@ python -m app.main export \
   --out /path/to/output \
   --times 12.5,44.2,91.0 \
   --sync-mode offset \
-  --offset-seconds 37
+  --reference-mode video-first \
+  --shift-hours 2 \
+  --offset-seconds 37 \
+  --jpg-quality 10 \
+  --manifest-format json
 ```
 
-Export using a relative GPX start time:
+### Export with relative-start mode
 
 ```bash
 python -m app.main export \
@@ -72,86 +209,123 @@ python -m app.main export \
   --out /path/to/output \
   --times 8.0,12.0 \
   --sync-mode relative-start \
+  --reference-mode gpx-first \
+  --shift-hours 2 \
   --start-time 2025-06-01T08:30:00Z
 ```
 
-Generate a CSV manifest instead of JSON:
+### Create a preview map HTML
 
 ```bash
-python -m app.main export \
+python -m app.main preview-map \
   --video /path/to/video.mp4 \
   --gpx /path/to/track.gpx \
-  --out /path/to/output \
-  --times 3.5 \
-  --manifest-format csv
+  --out preview/video-placement.html \
+  --times 4.0,18.5,33.2 \
+  --sync-mode offset \
+  --reference-mode video-first \
+  --shift-hours 2 \
+  --offset-seconds 37
 ```
 
-Inspect detected video metadata:
+## Sync Model
 
-```bash
-drone-frame-extractor inspect-video --video /path/to/video.mp4
-```
+This project has to deal with a messy real-world problem: video timestamps and GPX timestamps often do not line up cleanly.
 
-Inspect GPX timing:
+The tool currently supports:
 
-```bash
-drone-frame-extractor inspect-gpx --gpx /path/to/track.gpx
-```
+- `offset`
+  - the main practical mode
+  - apply a second-level offset between the two timelines
+- `relative-start`
+  - define where video time `00:00:00` should land on the GPX timeline
+- `absolute-video`
+  - trust the video timestamp directly
+
+Important details:
+
+- GPX timestamps are treated as UTC
+- naive video timestamps may come from local device time
+- the UI lets you choose who should be treated as the reference timeline
+- the UI also shows when a resolved frame time falls outside the GPX window and is being clamped to the nearest track endpoint
+
+## Output
+
+For each exported still, the tool can write:
+
+- `DateTimeOriginal`
+- GPS latitude / longitude
+- optional altitude
+
+It also writes a manifest containing data such as:
+
+- source video
+- frame position in seconds
+- resolved timestamp
+- GPX timestamp
+- latitude / longitude / elevation
+- output filename
+- sync mode
+- offset
+- hour shift
 
 ## Repository Layout
 
 ```text
-drone-frame-extractor/
+hover-frame-extractor/
   README.md
   pyproject.toml
   src/
     app/
       main.py
-      ui/
       services/
-      models/
+      ui/
     core/
-      video.py
-      gpx.py
-      sync.py
       export.py
+      gpx.py
+      map_preview.py
       metadata.py
+      sync.py
+      video.py
   tests/
   docs/
 ```
 
-## Assumptions
+## Development
 
-- Initial MVP uses the nearest GPX point; interpolation is intentionally deferred.
-- If the video has no trustworthy creation timestamp, the CLI still works with manual offset or relative start time.
-- Timestamps are normalized to UTC internally when GPX timestamps include timezone data.
-- The final product should optimize for selecting a few best stills from a video, not for bulk frame extraction.
-- A lightweight map panel is required in the UI so the user can see where the current frame is located along the GPX track.
+Run tests:
 
-## UI Direction
+```bash
+pytest
+```
 
-- Phase 2 remains a `PySide6` desktop UI on top of the existing core services.
-- The UI should stay as platform-agnostic as practical even though macOS is the first target.
-- Visual design should align with `https://onyx.scharz`.
-- The UI should center around:
-  - video preview with scrubber
-  - single-photo marker selection
-  - simple map-based geolocation preview for the current frame
+Run the CLI:
 
-## Local Sample Media
+```bash
+python -m app.main --help
+```
 
-- Real test assets are available in `media/`.
-- Current sample files:
-  - `media/HOVER_20250611_1749636341404.MP4`
-  - `media/2025-06-11_2315554315_Gravel-Fahrt.gpx`
+Run the UI:
 
-## Next Steps
+```bash
+python -m app.main ui
+```
 
-- PySide6 desktop MVP with:
-  - file selection
-  - Qt multimedia preview
-  - timeline markers
-  - simple map panel for frame location
-  - export job progress
-- optional GPX interpolation between track points
-- packaged macOS app bundle
+## Roadmap
+
+- smoother playback and codec fallback handling
+- GPX interpolation between points
+- richer marker editing on the map
+- persistent project/session files
+- packaged app builds for macOS
+
+## Known Caveats
+
+- Some videos produce decoder warnings in the terminal through the Qt/FFmpeg stack.
+- Playback responsiveness depends heavily on codec/container support and hardware decoding.
+- If the resolved timestamp is outside the GPX time window, the track position will clamp to the nearest start/end point.
+- Online map tiles are currently used for the zoomable basemap.
+
+## License
+
+Add your preferred license here.

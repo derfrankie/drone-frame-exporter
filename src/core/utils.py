@@ -21,6 +21,13 @@ def ensure_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+def ensure_utc_assuming_local(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        local_tz = datetime.now().astimezone().tzinfo
+        return dt.replace(tzinfo=local_tz).astimezone(timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def format_filename_timestamp(dt: datetime) -> str:
     utc_dt = ensure_utc(dt)
     return utc_dt.strftime("%Y-%m-%d_%H-%M-%S")

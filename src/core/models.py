@@ -42,6 +42,7 @@ class ExportedFrameRecord:
     output_file: str
     sync_mode: str
     offset_seconds: float | None
+    shift_hours: float | None
 
     def to_dict(self) -> dict:
         return asdict(self)

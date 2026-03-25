@@ -7,11 +7,14 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from app.services.presentation import build_track_markers
 from core.errors import DroneFrameExtractorError
 from core.export import export_frames
 from core.gpx import load_gpx_track
+from core.map_preview import write_track_preview_html
 from core.models import ExportFrameRequest
 from core.sync import (
+    REFERENCE_VIDEO_FIRST,
     SYNC_MODE_ABSOLUTE_VIDEO,
     SYNC_MODE_OFFSET,
     SYNC_MODE_RELATIVE_START,
@@ -69,10 +72,15 @@ def export_command(
         help="offset, relative-start, or absolute-video",
     ),
     offset_seconds: float | None = typer.Option(None, help="Used in manual-offset mode."),
+    shift_hours: float = typer.Option(
+        0.0,
+        help="Shift video timestamps by whole or fractional hours to match GPX UTC timing.",
+    ),
+    reference_mode: str = typer.Option(REFERENCE_VIDEO_FIRST, help="video-first or gpx-first"),
     start_time: str | None = typer.Option(
         None, help="ISO-8601 timestamp for relative-start mode, for example 2025-06-01T08:30:00Z."
     ),
-    jpg_quality: int = typer.Option(2, min=2, max=31, help="Lower means better quality in ffmpeg."),
+    jpg_quality: int = typer.Option(10, min=2, max=31, help="Lower means better quality in ffmpeg."),
     manifest_format: str = typer.Option("json", help="json or csv"),
 ) -> None:
     """Export selected frames, write EXIF, and generate a manifest."""
@@ -90,6 +98,8 @@ def export_command(
             sync_mode=sync_mode,
             offset_seconds=offset_seconds,
             relative_start_time=relative_start_time,
+            shift_hours=shift_hours,
+            reference_mode=reference_mode,
             jpg_quality=jpg_quality,
             manifest_format=manifest_format,
         )
@@ -120,6 +130,70 @@ def export_command(
     console.print(f"Manifest written to {manifest_path}")
 
 
+@app.command("preview-map")
+def preview_map_command(
+    video: Path = typer.Option(..., exists=True, dir_okay=False, file_okay=True),
+    gpx: Path = typer.Option(..., exists=True, dir_okay=False, file_okay=True),
+    out: Path = typer.Option(..., file_okay=True, dir_okay=False),
+    times: str | None = typer.Option(
+        None,
+        help="Comma-separated video times in seconds to mark as candidate photo frames.",
+    ),
+    sync_mode: str = typer.Option(SYNC_MODE_OFFSET, help="offset, relative-start, or absolute-video"),
+    offset_seconds: float | None = typer.Option(None, help="Used in offset mode."),
+    shift_hours: float = typer.Option(
+        0.0,
+        help="Shift video timestamps by whole or fractional hours to match GPX UTC timing.",
+    ),
+    reference_mode: str = typer.Option(REFERENCE_VIDEO_FIRST, help="video-first or gpx-first"),
+    start_time: str | None = typer.Option(
+        None, help="ISO-8601 timestamp for relative-start mode, for example 2025-06-01T08:30:00Z."
+    ),
+) -> None:
+    """Create a local HTML preview that places the video and selected frames on the GPX track."""
+    try:
+        video_metadata = inspect_video(video)
+        gpx_index = load_gpx_track(gpx)
+        relative_start_time = _parse_iso_datetime(start_time) if start_time else None
+        frame_values = _parse_frame_values(times=times, frame=None) if times else []
+        markers = _build_preview_markers(
+            video_metadata=video_metadata,
+            gpx_index=gpx_index,
+            frame_values=frame_values,
+            sync_mode=sync_mode,
+            offset_seconds=offset_seconds,
+            relative_start_time=relative_start_time,
+            shift_hours=shift_hours,
+            reference_mode=reference_mode,
+        )
+        output_path = write_track_preview_html(
+            output_path=out,
+            gpx_index=gpx_index,
+            markers=markers,
+            title="Video Placement Preview",
+        )
+    except typer.BadParameter as exc:
+        console.print(f"[red]Argument error:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
+    except DroneFrameExtractorError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"Preview written to {output_path}")
+
+
+@app.command("ui")
+def ui_command(
+    video: Path | None = typer.Option(None, exists=True, dir_okay=False, file_okay=True),
+    gpx: Path | None = typer.Option(None, exists=True, dir_okay=False, file_okay=True),
+    out: Path | None = typer.Option(None, file_okay=False, dir_okay=True),
+) -> None:
+    """Launch the desktop UI for visual photo selection."""
+    from app.ui.launcher import run_ui
+
+    raise typer.Exit(code=run_ui(initial_video=video, initial_gpx=gpx, initial_output_dir=out))
+
+
 def _parse_iso_datetime(value: str) -> datetime:
     normalized = value.replace("Z", "+00:00")
     return datetime.fromisoformat(normalized)
@@ -138,6 +212,41 @@ def _parse_frame_values(times: str | None, frame: list[float] | None) -> list[fl
         return frame
 
     raise typer.BadParameter("Provide either --times or one or more --frame values.")
+
+
+def _build_preview_markers(
+    video_metadata,
+    gpx_index,
+    frame_values: list[float],
+    sync_mode: str,
+    offset_seconds: float | None,
+    relative_start_time: datetime | None,
+    shift_hours: float,
+    reference_mode: str,
+) -> list[dict]:
+    markers: list[dict] = []
+    for marker in build_track_markers(
+        video_metadata=video_metadata,
+        gpx_index=gpx_index,
+        frame_values=frame_values,
+        sync_mode=sync_mode,
+        offset_seconds=offset_seconds,
+        relative_start_time=relative_start_time,
+        shift_hours=shift_hours,
+        reference_mode=reference_mode,
+    ):
+        markers.append(
+            {
+                "label": marker.label,
+                "kind": marker.kind,
+                "color": marker.color,
+                "frame_seconds": marker.frame_seconds,
+                "timestamp": marker.timestamp,
+                "latitude": marker.latitude,
+                "longitude": marker.longitude,
+            }
+        )
+    return markers
 
 
 def main() -> None:

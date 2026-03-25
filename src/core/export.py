@@ -21,14 +21,18 @@ def export_frames(
     sync_mode: str,
     offset_seconds: float | None = None,
     relative_start_time: datetime | None = None,
-    jpg_quality: int = 2,
+    shift_hours: float = 0.0,
+    jpg_quality: int = 10,
     manifest_format: str = "json",
+    filename_middle: str = "",
+    reference_mode: str = "video-first",
 ) -> tuple[list[ExportedFrameRecord], Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     if not frames:
         raise ValueError("At least one frame selection is required.")
 
     records: list[ExportedFrameRecord] = []
+    used_paths: set[Path] = set()
     for frame_request in frames:
         resolved = resolve_frame_time(
             frame_seconds=frame_request.frame_seconds,
@@ -37,8 +41,16 @@ def export_frames(
             sync_mode=sync_mode,
             offset_seconds=offset_seconds,
             relative_start_time=relative_start_time,
+            shift_hours=shift_hours,
+            reference_mode=reference_mode,
         )
-        output_path = _build_output_path(output_dir, resolved)
+        output_path = _build_output_path(
+            output_dir=output_dir,
+            video_metadata=video_metadata,
+            resolved=resolved,
+            filename_middle=filename_middle,
+            used_paths=used_paths,
+        )
         extract_frame(
             video_path=video_metadata.path,
             frame_seconds=frame_request.frame_seconds,
@@ -48,20 +60,33 @@ def export_frames(
         write_image_metadata(output_path, resolved.resolved_timestamp, resolved.gpx_point)
         records.append(_record_from_export(video_metadata, output_path, resolved))
 
-    manifest_path = write_manifest(output_dir, records, manifest_format)
+    manifest_path = write_manifest(
+        output_dir=output_dir,
+        records=records,
+        manifest_format=manifest_format,
+        video_metadata=video_metadata,
+        filename_middle=filename_middle,
+    )
     return records, manifest_path
 
 
-def write_manifest(output_dir: Path, records: list[ExportedFrameRecord], manifest_format: str) -> Path:
+def write_manifest(
+    output_dir: Path,
+    records: list[ExportedFrameRecord],
+    manifest_format: str,
+    video_metadata: VideoMetadata,
+    filename_middle: str = "",
+) -> Path:
     manifest_format = manifest_format.lower()
+    manifest_name = build_manifest_filename(video_metadata.path.stem, manifest_format, filename_middle)
     if manifest_format == "json":
-        manifest_path = output_dir / "export-manifest.json"
+        manifest_path = output_dir / manifest_name
         payload = [record.to_dict() for record in records]
         manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         return manifest_path
 
     if manifest_format == "csv":
-        manifest_path = output_dir / "export-manifest.csv"
+        manifest_path = output_dir / manifest_name
         fieldnames = list(ExportedFrameRecord.__dataclass_fields__.keys())
         with manifest_path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -73,9 +98,58 @@ def write_manifest(output_dir: Path, records: list[ExportedFrameRecord], manifes
     raise ValueError(f"Unsupported manifest format: {manifest_format}")
 
 
-def _build_output_path(output_dir: Path, resolved: ResolvedFrameTime) -> Path:
-    filename = f"{format_filename_timestamp(resolved.gpx_point.timestamp)}.jpg"
-    return output_dir / filename
+def _build_output_path(
+    output_dir: Path,
+    video_metadata: VideoMetadata,
+    resolved: ResolvedFrameTime,
+    filename_middle: str = "",
+    used_paths: set[Path] | None = None,
+) -> Path:
+    filename = build_output_filename(
+        original_stem=video_metadata.path.stem,
+        timestamp=resolved.gpx_point.timestamp,
+        filename_middle=filename_middle,
+    )
+    candidate = output_dir / filename
+    if used_paths is None:
+        return candidate
+
+    counter = 2
+    while candidate in used_paths or candidate.exists():
+        candidate = output_dir / build_output_filename(
+            original_stem=video_metadata.path.stem,
+            timestamp=resolved.gpx_point.timestamp,
+            filename_middle=filename_middle,
+            suffix=f"{counter:02d}",
+        )
+        counter += 1
+    used_paths.add(candidate)
+    return candidate
+
+
+def build_output_filename(
+    original_stem: str,
+    timestamp: datetime,
+    filename_middle: str = "",
+    suffix: str = "",
+) -> str:
+    parts = [original_stem]
+    middle = filename_middle.strip().strip("_").strip()
+    if middle:
+        parts.append(middle)
+    parts.append(format_filename_timestamp(timestamp))
+    if suffix:
+        parts.append(suffix)
+    return "_".join(parts) + ".jpg"
+
+
+def build_manifest_filename(original_stem: str, manifest_format: str, filename_middle: str = "") -> str:
+    parts = [original_stem]
+    middle = filename_middle.strip().strip("_").strip()
+    if middle:
+        parts.append(middle)
+    parts.append("export")
+    return "_".join(parts) + f".{manifest_format}"
 
 
 def _record_from_export(
@@ -100,4 +174,5 @@ def _record_from_export(
         output_file=str(output_path),
         sync_mode=resolved.sync_mode,
         offset_seconds=resolved.offset_seconds,
+        shift_hours=resolved.shift_hours,
     )
