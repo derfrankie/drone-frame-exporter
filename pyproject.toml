@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drone-frame-extractor"
+version = "0.1.0"
+description = "Local-first macOS tool for extracting JPG frames from drone videos with GPX time sync and metadata export."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "Codex" }
+]
+dependencies = [
+  "gpxpy>=1.6.2,<2.0.0",
+  "PySide6>=6.8,<7.0",
+  "typer>=0.12.3,<1.0.0",
+  "rich>=13.7.1,<14.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9.0",
+]
+
+[project.scripts]
+drone-frame-extractor = "app.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
