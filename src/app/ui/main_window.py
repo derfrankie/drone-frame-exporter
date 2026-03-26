@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QSignalBlocker, QTimer, Qt, QUrl
+from PySide6.QtCore import QSettings, QSignalBlocker, QTimer, Qt, QUrl
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
@@ -47,7 +47,7 @@ from core.sync import (
     SYNC_MODE_RELATIVE_START,
     resolve_frame_time,
 )
-from core.video import inspect_video
+from core.video import inspect_video, is_wide_gamut_source
 
 
 @dataclass(slots=True)
@@ -65,10 +65,12 @@ class DroneFrameExtractorWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Drone Frame Extractor")
         self.resize(1560, 940)
+        self.settings = QSettings("derfrankie", "drone-frame-exporter")
 
         self.video_metadata: VideoMetadata | None = None
         self.gpx_index: GpxTrackIndex | None = None
-        self.output_dir: Path | None = initial_output_dir
+        stored_output_dir = self.settings.value("last_output_dir", "", str)
+        self.output_dir: Path | None = initial_output_dir or (Path(stored_output_dir) if stored_output_dir else None)
         self.marker_entries: list[MarkerEntry] = []
         self._is_scrubbing = False
         self._gpx_scrub_index = 0
@@ -89,8 +91,8 @@ class DroneFrameExtractorWindow(QMainWindow):
         self._build_ui()
         self._connect_signals()
 
-        if initial_output_dir is not None:
-            self.output_edit.setText(str(initial_output_dir))
+        if self.output_dir is not None:
+            self.output_edit.setText(str(self.output_dir))
         if initial_video is not None:
             self.video_path_edit.setText(str(initial_video))
             self._load_video(initial_video)
@@ -204,6 +206,9 @@ class DroneFrameExtractorWindow(QMainWindow):
         self.shift_hours_combo = QComboBox()
         for hour in range(-5, 6):
             self.shift_hours_combo.addItem(f"{hour:+d} h", hour)
+        zero_shift_index = self.shift_hours_combo.findData(0)
+        if zero_shift_index >= 0:
+            self.shift_hours_combo.setCurrentIndex(zero_shift_index)
         self.start_time_edit = QDateTimeEdit(self)
         self.start_time_edit.setCalendarPopup(True)
         self.start_time_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
@@ -220,10 +225,8 @@ class DroneFrameExtractorWindow(QMainWindow):
         self.marker_list.setSelectionMode(QAbstractItemView.SingleSelection)
         markers_layout.addWidget(self.marker_list)
         marker_buttons = QHBoxLayout()
-        self.add_marker_button = QPushButton("Add Current Frame")
         self.remove_marker_button = QPushButton("Remove Selected")
         self.jump_marker_button = QPushButton("Jump To Marker")
-        marker_buttons.addWidget(self.add_marker_button)
         marker_buttons.addWidget(self.remove_marker_button)
         marker_buttons.addWidget(self.jump_marker_button)
         markers_layout.addLayout(marker_buttons)
@@ -236,10 +239,13 @@ class DroneFrameExtractorWindow(QMainWindow):
         self.quality_spin.setValue(10)
         self.manifest_combo = QComboBox()
         self.manifest_combo.addItems(["json", "csv"])
+        self.export_format_combo = QComboBox()
+        self.export_format_combo.addItems(["jpg", "tiff"])
         self.filename_middle_edit = QLineEdit()
         self.filename_middle_edit.setPlaceholderText("tour / bestshot / hero")
         self.export_button = QPushButton("Export Photos")
         export_form.addRow("JPG Quality", self.quality_spin)
+        export_form.addRow("Export Format", self.export_format_combo)
         export_form.addRow("Manifest", self.manifest_combo)
         export_form.addRow("Filename Middle", self.filename_middle_edit)
         export_form.addRow("", self.export_button)
@@ -273,17 +279,17 @@ class DroneFrameExtractorWindow(QMainWindow):
         transport = QHBoxLayout()
         self.step_back_5_button = QPushButton("-5 Frames")
         self.step_back_1_button = QPushButton("-1 Frame")
-        self.play_button = QPushButton("Play")
-        self.pause_button = QPushButton("Pause")
+        self.play_pause_button = QPushButton("Play")
         self.step_forward_1_button = QPushButton("+1 Frame")
         self.step_forward_5_button = QPushButton("+5 Frames")
         transport.addWidget(self.step_back_5_button)
         transport.addWidget(self.step_back_1_button)
-        transport.addWidget(self.play_button)
-        transport.addWidget(self.pause_button)
+        transport.addWidget(self.play_pause_button)
         transport.addWidget(self.step_forward_1_button)
         transport.addWidget(self.step_forward_5_button)
         transport.addStretch(1)
+        self.add_marker_button = QPushButton("Add Current Frame")
+        transport.addWidget(self.add_marker_button)
 
         layout.addWidget(header)
         layout.addWidget(subtitle)
@@ -330,13 +336,13 @@ class DroneFrameExtractorWindow(QMainWindow):
         self.output_button.clicked.connect(self._choose_output_dir)
         self.step_back_5_button.clicked.connect(lambda: self._step_frames(-5))
         self.step_back_1_button.clicked.connect(lambda: self._step_frames(-1))
-        self.play_button.clicked.connect(self.player.play)
-        self.pause_button.clicked.connect(self.player.pause)
+        self.play_pause_button.clicked.connect(self._toggle_playback)
         self.step_forward_1_button.clicked.connect(lambda: self._step_frames(1))
         self.step_forward_5_button.clicked.connect(lambda: self._step_frames(5))
 
         self.player.durationChanged.connect(self._on_duration_changed)
         self.player.positionChanged.connect(self._on_position_changed)
+        self.player.playbackStateChanged.connect(self._refresh_play_pause_button)
         self.position_slider.sliderPressed.connect(self._on_slider_pressed)
         self.position_slider.sliderReleased.connect(self._on_slider_released)
         self.position_slider.sliderMoved.connect(self._on_slider_moved)
@@ -373,6 +379,7 @@ class DroneFrameExtractorWindow(QMainWindow):
         if path:
             self.output_dir = Path(path)
             self.output_edit.setText(path)
+            self.settings.setValue("last_output_dir", path)
 
     def _load_video(self, path: Path) -> None:
         try:
@@ -380,8 +387,14 @@ class DroneFrameExtractorWindow(QMainWindow):
         except DroneFrameExtractorError as exc:
             QMessageBox.critical(self, "Video Error", str(exc))
             return
+        preferred_export_format = "tiff" if is_wide_gamut_source(self.video_metadata) else "jpg"
+        export_index = self.export_format_combo.findText(preferred_export_format)
+        if export_index >= 0:
+            self.export_format_combo.setCurrentIndex(export_index)
         self.player.setSource(QUrl.fromLocalFile(str(path.resolve())))
-        self.statusBar().showMessage(f"Loaded video: {path.name}")
+        self.statusBar().showMessage(
+            f"Loaded video: {path.name}  |  export format set to {preferred_export_format}"
+        )
         self._refresh_current_info()
 
     def _load_gpx(self, path: Path) -> None:
@@ -431,6 +444,18 @@ class DroneFrameExtractorWindow(QMainWindow):
         self._refresh_position_label(value, self.player.duration())
         if self._is_scrubbing:
             self.player.setPosition(value)
+
+    def _toggle_playback(self) -> None:
+        if self.player.playbackState() == QMediaPlayer.PlayingState:
+            self.player.pause()
+        else:
+            self.player.play()
+
+    def _refresh_play_pause_button(self, _state: QMediaPlayer.PlaybackState | None = None) -> None:
+        if self.player.playbackState() == QMediaPlayer.PlayingState:
+            self.play_pause_button.setText("Pause")
+        else:
+            self.play_pause_button.setText("Play")
 
     def _step_frames(self, frame_count: int) -> None:
         if self.video_metadata is None:
@@ -496,14 +521,32 @@ class DroneFrameExtractorWindow(QMainWindow):
             f"Creation time: {self.video_metadata.creation_time.isoformat() if self.video_metadata.creation_time else 'missing'}",
             f"Resolution: {self.video_metadata.width}x{self.video_metadata.height}",
         ]
+        if is_wide_gamut_source(self.video_metadata):
+            lines.extend(
+                [
+                    "Detected source: wide gamut / HDR-like",
+                    f"Codec: {self.video_metadata.codec_name or 'unknown'}",
+                    f"Primaries/Transfer: {self.video_metadata.color_primaries or 'unknown'} / {self.video_metadata.color_transfer or 'unknown'}",
+                    "Suggested export format: tiff",
+                ]
+            )
 
-        if self.gpx_index is not None:
+        try:
+            resolved = self._resolve_frame(frame_seconds)
+        except DroneFrameExtractorError as exc:
+            lines.extend(["", f"Sync issue: {exc}"])
+            self._current_map_point = None
+            self.track_widget.set_current_point(None)
+            self.current_info.setPlainText("\n".join(lines))
+            self._refresh_track_summary(frame_seconds)
+            self._map_sync_timer.start(80)
+            return
+
+        lines.extend(["", f"Resolved timestamp: {resolved.resolved_timestamp.isoformat()}"])
+        if resolved.gpx_point is not None:
             try:
-                resolved = self._resolve_frame(frame_seconds)
                 lines.extend(
                     [
-                        "",
-                        f"Resolved timestamp: {resolved.resolved_timestamp.isoformat()}",
                         f"GPX point time: {resolved.gpx_point.timestamp.isoformat()}",
                         f"Location: {resolved.gpx_point.latitude:.6f}, {resolved.gpx_point.longitude:.6f}",
                         f"Altitude: {resolved.gpx_point.elevation if resolved.gpx_point.elevation is not None else 'n/a'}",
@@ -511,17 +554,19 @@ class DroneFrameExtractorWindow(QMainWindow):
                 )
                 self._current_map_point = resolved.gpx_point
                 self.track_widget.set_current_point(resolved.gpx_point)
-            except DroneFrameExtractorError as exc:
-                lines.extend(["", f"Sync issue: {exc}"])
-                self._current_map_point = None
-                self.track_widget.set_current_point(None)
+            except DroneFrameExtractorError:
+                pass
+        else:
+            lines.append("GPX: not loaded, export will use video timestamp plus sync settings only")
+            self._current_map_point = None
+            self.track_widget.set_current_point(None)
         self.current_info.setPlainText("\n".join(lines))
         self._refresh_track_summary(frame_seconds)
         self._map_sync_timer.start(80)
 
     def _refresh_track_summary(self, frame_seconds: float) -> None:
-        if self.video_metadata is None or self.gpx_index is None:
-            self.track_summary.setPlainText("Load both video and GPX to see the current placement.")
+        if self.video_metadata is None:
+            self.track_summary.setPlainText("Load a video to see the current placement.")
             return
         try:
             resolved = self._resolve_frame(frame_seconds)
@@ -570,8 +615,8 @@ class DroneFrameExtractorWindow(QMainWindow):
         self._sync_map_state(track_marker_payload=marker_payload)
 
     def _resolve_frame(self, frame_seconds: float):
-        if self.video_metadata is None or self.gpx_index is None:
-            raise DroneFrameExtractorError("Load both video and GPX first.")
+        if self.video_metadata is None:
+            raise DroneFrameExtractorError("Load a video first.")
         return resolve_frame_time(
             frame_seconds=frame_seconds,
             video_metadata=self.video_metadata,
@@ -624,7 +669,6 @@ class DroneFrameExtractorWindow(QMainWindow):
         )
 
     def _build_track_summary_lines(self, frame_seconds: float, resolved) -> list[str]:
-        assert self.gpx_index is not None
         lines = [
             f"Sync mode: {self.sync_mode_combo.currentText()}",
             f"Reference mode: {self.reference_mode_combo.currentText()}",
@@ -632,10 +676,17 @@ class DroneFrameExtractorWindow(QMainWindow):
             f"Shift hours: {self._selected_shift_hours():.2f}",
             f"Current frame: {frame_seconds:.3f}s",
             f"Resolved time: {resolved.resolved_timestamp.isoformat()}",
-            f"Track location: {resolved.gpx_point.latitude:.6f}, {resolved.gpx_point.longitude:.6f}",
-            f"GPX cursor: {self._current_gpx_scrub_point().timestamp.isoformat() if self._current_gpx_scrub_point() else 'n/a'}",
-            f"Track window: {self.gpx_index.start_time.isoformat()} -> {self.gpx_index.end_time.isoformat()}",
         ]
+        if self.gpx_index is None or resolved.gpx_point is None:
+            lines.append("Track location: no GPX loaded")
+            return lines
+        lines.extend(
+            [
+                f"Track location: {resolved.gpx_point.latitude:.6f}, {resolved.gpx_point.longitude:.6f}",
+                f"GPX cursor: {self._current_gpx_scrub_point().timestamp.isoformat() if self._current_gpx_scrub_point() else 'n/a'}",
+                f"Track window: {self.gpx_index.start_time.isoformat()} -> {self.gpx_index.end_time.isoformat()}",
+            ]
+        )
         if not self.gpx_index.contains_time(resolved.resolved_timestamp):
             delta_seconds = self.gpx_index.distance_to_range_seconds(resolved.resolved_timestamp)
             if resolved.resolved_timestamp < self.gpx_index.start_time:
@@ -723,8 +774,8 @@ class DroneFrameExtractorWindow(QMainWindow):
         )
 
     def _export_selected_frames(self) -> None:
-        if self.video_metadata is None or self.gpx_index is None:
-            QMessageBox.information(self, "Missing Files", "Load both a video and a GPX track first.")
+        if self.video_metadata is None:
+            QMessageBox.information(self, "Missing Files", "Load a video first.")
             return
         if not self.marker_entries:
             QMessageBox.information(self, "No Photos Selected", "Add at least one photo marker before exporting.")
@@ -734,6 +785,7 @@ class DroneFrameExtractorWindow(QMainWindow):
             return
 
         self.output_dir = Path(self.output_edit.text().strip())
+        self.settings.setValue("last_output_dir", str(self.output_dir))
         frame_requests = [ExportFrameRequest(frame_seconds=entry.frame_seconds) for entry in self.marker_entries]
 
         QApplication.setOverrideCursor(Qt.WaitCursor)
@@ -748,6 +800,7 @@ class DroneFrameExtractorWindow(QMainWindow):
                 relative_start_time=self._relative_start_datetime(),
                 shift_hours=self._selected_shift_hours(),
                 jpg_quality=int(self.quality_spin.value()),
+                export_format=self.export_format_combo.currentText(),
                 manifest_format=self.manifest_combo.currentText(),
                 filename_middle=self.filename_middle_edit.text(),
                 reference_mode=self.reference_mode_combo.currentText(),

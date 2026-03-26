@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from core.export import build_manifest_filename, build_output_filename
-from core.models import GpxPoint
+from core.models import ExportedFrameRecord, GpxPoint
 from core.utils import format_exif_timestamp, format_filename_timestamp
 
 
@@ -54,3 +54,29 @@ def test_build_manifest_filename_uses_video_name_and_middle() -> None:
         build_manifest_filename("HOVER_20250611_1749636341404", "json", "hero")
         == "HOVER_20250611_1749636341404_hero_export.json"
     )
+
+
+def test_build_output_filename_supports_tiff_extension() -> None:
+    timestamp = datetime(2025, 6, 1, 8, 30, 0, tzinfo=timezone.utc)
+    assert (
+        build_output_filename("HOVER_20250611_1749636341404", timestamp, "hero", extension="tiff")
+        == "HOVER_20250611_1749636341404_hero_2025-06-01_08-30-00.tiff"
+    )
+
+
+def test_export_record_allows_missing_gpx_metadata() -> None:
+    record = ExportedFrameRecord(
+        source_video="video.mp4",
+        frame_seconds=12.5,
+        video_timestamp="2025-06-01T08:30:00+00:00",
+        resolved_timestamp="2025-06-01T08:30:12.500000+00:00",
+        gpx_timestamp=None,
+        latitude=None,
+        longitude=None,
+        elevation=None,
+        output_file="frame.jpg",
+        sync_mode="offset",
+        offset_seconds=0.0,
+        shift_hours=0.0,
+    )
+    assert record.to_dict()["gpx_timestamp"] is None

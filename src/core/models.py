@@ -14,6 +14,12 @@ class VideoMetadata:
     fps: float | None
     creation_time: datetime | None
     raw_format_name: str | None
+    codec_name: str | None = None
+    pixel_format: str | None = None
+    bit_depth: int | None = None
+    color_primaries: str | None = None
+    color_transfer: str | None = None
+    color_space: str | None = None
 
 
 @dataclass(slots=True)
@@ -35,9 +41,9 @@ class ExportedFrameRecord:
     frame_seconds: float
     video_timestamp: str | None
     resolved_timestamp: str
-    gpx_timestamp: str
-    latitude: float
-    longitude: float
+    gpx_timestamp: str | None
+    latitude: float | None
+    longitude: float | None
     elevation: float | None
     output_file: str
     sync_mode: str

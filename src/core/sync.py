@@ -20,7 +20,7 @@ REFERENCE_GPX_FIRST = "gpx-first"
 class ResolvedFrameTime:
     video_time_seconds: float
     resolved_timestamp: datetime
-    gpx_point: GpxPoint
+    gpx_point: GpxPoint | None
     sync_mode: str
     offset_seconds: float | None
     shift_hours: float | None
@@ -29,7 +29,7 @@ class ResolvedFrameTime:
 def resolve_frame_time(
     frame_seconds: float,
     video_metadata: VideoMetadata,
-    gpx_index: GpxTrackIndex,
+    gpx_index: GpxTrackIndex | None,
     sync_mode: str,
     offset_seconds: float | None = None,
     relative_start_time: datetime | None = None,
@@ -50,7 +50,7 @@ def resolve_frame_time(
     )
 
     resolved_timestamp = base_timestamp + timedelta(seconds=frame_seconds)
-    gpx_point = gpx_index.nearest_point(resolved_timestamp)
+    gpx_point = gpx_index.nearest_point(resolved_timestamp) if gpx_index is not None else None
     return ResolvedFrameTime(
         video_time_seconds=frame_seconds,
         resolved_timestamp=resolved_timestamp,
@@ -63,7 +63,7 @@ def resolve_frame_time(
 
 def _resolve_base_timestamp(
     video_metadata: VideoMetadata,
-    gpx_index: GpxTrackIndex,
+    gpx_index: GpxTrackIndex | None,
     sync_mode: str,
     offset_seconds: float | None,
     relative_start_time: datetime | None,
@@ -80,6 +80,10 @@ def _resolve_base_timestamp(
                 seconds=directional_offset,
             )
             return base, offset_seconds
+        if gpx_index is None:
+            raise SyncConfigurationError(
+                "Offset mode without a video timestamp requires a GPX track as the time reference."
+            )
         base = gpx_index.start_time + timedelta(hours=shift_hours, seconds=directional_offset)
         return base, offset_seconds
 
@@ -87,7 +91,7 @@ def _resolve_base_timestamp(
         if relative_start_time is None:
             raise SyncConfigurationError("Relative start mode requires --start-time.")
         normalized = ensure_utc(relative_start_time) + timedelta(hours=shift_hours)
-        offset = (normalized - gpx_index.start_time).total_seconds()
+        offset = (normalized - gpx_index.start_time).total_seconds() if gpx_index is not None else None
         return normalized, offset
 
     if sync_mode == SYNC_MODE_ABSOLUTE_VIDEO:

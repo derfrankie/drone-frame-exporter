@@ -19,7 +19,7 @@ from core.sync import (
     SYNC_MODE_OFFSET,
     SYNC_MODE_RELATIVE_START,
 )
-from core.video import inspect_video
+from core.video import inspect_video, is_wide_gamut_source
 
 app = typer.Typer(help="Extract JPG frames from local drone videos and sync them with GPX tracks.")
 console = Console()
@@ -38,6 +38,12 @@ def inspect_video_command(video: Path = typer.Option(..., exists=True, dir_okay=
     table.add_row("FPS", f"{metadata.fps or 'unknown'}")
     table.add_row("Creation Time", metadata.creation_time.isoformat() if metadata.creation_time else "missing")
     table.add_row("Format", metadata.raw_format_name or "unknown")
+    table.add_row("Codec", metadata.codec_name or "unknown")
+    table.add_row("Pixel Format", metadata.pixel_format or "unknown")
+    table.add_row("Bit Depth", str(metadata.bit_depth or "unknown"))
+    table.add_row("Color Primaries", metadata.color_primaries or "unknown")
+    table.add_row("Color Transfer", metadata.color_transfer or "unknown")
+    table.add_row("Recommended Export", "tiff" if is_wide_gamut_source(metadata) else "jpg")
     console.print(table)
 
 
@@ -57,7 +63,7 @@ def inspect_gpx_command(gpx: Path = typer.Option(..., exists=True, dir_okay=Fals
 @app.command("export")
 def export_command(
     video: Path = typer.Option(..., exists=True, dir_okay=False, file_okay=True),
-    gpx: Path = typer.Option(..., exists=True, dir_okay=False, file_okay=True),
+    gpx: Path | None = typer.Option(None, exists=True, dir_okay=False, file_okay=True),
     output_dir: Path = typer.Option(..., "--out", file_okay=False, dir_okay=True),
     times: str | None = typer.Option(
         None,
@@ -81,13 +87,14 @@ def export_command(
         None, help="ISO-8601 timestamp for relative-start mode, for example 2025-06-01T08:30:00Z."
     ),
     jpg_quality: int = typer.Option(10, min=2, max=31, help="Lower means better quality in ffmpeg."),
+    export_format: str = typer.Option("jpg", help="jpg or tiff"),
     manifest_format: str = typer.Option("json", help="json or csv"),
 ) -> None:
     """Export selected frames, write EXIF, and generate a manifest."""
     try:
         frame_values = _parse_frame_values(times=times, frame=frame)
         video_metadata = inspect_video(video)
-        gpx_index = load_gpx_track(gpx)
+        gpx_index = load_gpx_track(gpx) if gpx is not None else None
         relative_start_time = _parse_iso_datetime(start_time) if start_time else None
         frame_requests = [ExportFrameRequest(frame_seconds=value) for value in frame_values]
         records, manifest_path = export_frames(
@@ -101,6 +108,7 @@ def export_command(
             shift_hours=shift_hours,
             reference_mode=reference_mode,
             jpg_quality=jpg_quality,
+            export_format=export_format,
             manifest_format=manifest_format,
         )
     except typer.BadParameter as exc:
@@ -119,7 +127,11 @@ def export_command(
     table.add_column("GPS")
     table.add_column("Output")
     for record in records:
-        gps = f"{record.latitude:.6f}, {record.longitude:.6f}"
+        gps = (
+            f"{record.latitude:.6f}, {record.longitude:.6f}"
+            if record.latitude is not None and record.longitude is not None
+            else "n/a"
+        )
         table.add_row(
             f"{record.frame_seconds:.3f}",
             record.resolved_timestamp,

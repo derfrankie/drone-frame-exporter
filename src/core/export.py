@@ -15,7 +15,7 @@ from core.video import extract_frame
 
 def export_frames(
     video_metadata: VideoMetadata,
-    gpx_index: GpxTrackIndex,
+    gpx_index: GpxTrackIndex | None,
     output_dir: Path,
     frames: list[ExportFrameRequest],
     sync_mode: str,
@@ -26,6 +26,7 @@ def export_frames(
     manifest_format: str = "json",
     filename_middle: str = "",
     reference_mode: str = "video-first",
+    export_format: str = "jpg",
 ) -> tuple[list[ExportedFrameRecord], Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     if not frames:
@@ -50,12 +51,14 @@ def export_frames(
             resolved=resolved,
             filename_middle=filename_middle,
             used_paths=used_paths,
+            export_format=export_format,
         )
         extract_frame(
             video_path=video_metadata.path,
             frame_seconds=frame_request.frame_seconds,
             output_path=output_path,
             quality=jpg_quality,
+            output_format=export_format,
         )
         write_image_metadata(output_path, resolved.resolved_timestamp, resolved.gpx_point)
         records.append(_record_from_export(video_metadata, output_path, resolved))
@@ -104,11 +107,13 @@ def _build_output_path(
     resolved: ResolvedFrameTime,
     filename_middle: str = "",
     used_paths: set[Path] | None = None,
+    export_format: str = "jpg",
 ) -> Path:
     filename = build_output_filename(
         original_stem=video_metadata.path.stem,
-        timestamp=resolved.gpx_point.timestamp,
+        timestamp=resolved.resolved_timestamp,
         filename_middle=filename_middle,
+        extension=export_format,
     )
     candidate = output_dir / filename
     if used_paths is None:
@@ -118,9 +123,10 @@ def _build_output_path(
     while candidate in used_paths or candidate.exists():
         candidate = output_dir / build_output_filename(
             original_stem=video_metadata.path.stem,
-            timestamp=resolved.gpx_point.timestamp,
+            timestamp=resolved.resolved_timestamp,
             filename_middle=filename_middle,
             suffix=f"{counter:02d}",
+            extension=export_format,
         )
         counter += 1
     used_paths.add(candidate)
@@ -132,6 +138,7 @@ def build_output_filename(
     timestamp: datetime,
     filename_middle: str = "",
     suffix: str = "",
+    extension: str = "jpg",
 ) -> str:
     parts = [original_stem]
     middle = filename_middle.strip().strip("_").strip()
@@ -140,7 +147,7 @@ def build_output_filename(
     parts.append(format_filename_timestamp(timestamp))
     if suffix:
         parts.append(suffix)
-    return "_".join(parts) + ".jpg"
+    return "_".join(parts) + f".{extension}"
 
 
 def build_manifest_filename(original_stem: str, manifest_format: str, filename_middle: str = "") -> str:
@@ -167,10 +174,10 @@ def _record_from_export(
         frame_seconds=resolved.video_time_seconds,
         video_timestamp=video_timestamp,
         resolved_timestamp=ensure_utc(resolved.resolved_timestamp).isoformat(),
-        gpx_timestamp=ensure_utc(resolved.gpx_point.timestamp).isoformat(),
-        latitude=resolved.gpx_point.latitude,
-        longitude=resolved.gpx_point.longitude,
-        elevation=resolved.gpx_point.elevation,
+        gpx_timestamp=ensure_utc(resolved.gpx_point.timestamp).isoformat() if resolved.gpx_point else None,
+        latitude=resolved.gpx_point.latitude if resolved.gpx_point else None,
+        longitude=resolved.gpx_point.longitude if resolved.gpx_point else None,
+        elevation=resolved.gpx_point.elevation if resolved.gpx_point else None,
         output_file=str(output_path),
         sync_mode=resolved.sync_mode,
         offset_seconds=resolved.offset_seconds,
