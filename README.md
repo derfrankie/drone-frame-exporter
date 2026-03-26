@@ -23,7 +23,7 @@ What already works:
 - visual frame selection in a PySide6 UI
 - play/pause, scrubbing, and `1` / `5` frame stepping
 - `Video` and `GPX` timestamp authority modes
-- second offset and hour shift controls
+- derived sync offset and export-only time shift controls
 - GPX cursor alignment on a zoomable OpenStreetMap view
 - JPG export for standard footage
 - TIFF export for wide-gamut / HDR-like footage
@@ -54,8 +54,8 @@ Current limitations:
   - `relative-start`
   - `absolute-video`
   - choose whether `Video` or `GPX` is the authoritative timeline
-  - second-level offset
-  - fixed hour shift from `-5 h` to `+5 h`
+  - second-level sync offset
+  - separate export-only time shift from `-5 h` to `+5 h`
 - Map-based positioning
   - zoomable OpenStreetMap-based track view
   - current video position on the GPX track
@@ -136,7 +136,7 @@ drone-frame-extractor ui \
   --out /path/to/output
 ```
 
-`--gpx` is optional. If no GPX is loaded, exports still work and use the resolved video timestamp plus the configured sync offset / shift, but no GPS tags are written.
+`--gpx` is optional. If no GPX is loaded, exports still work and use the resolved video timestamp plus the configured sync offset. `Export Time Shift` still affects only the written export time, not the map matching.
 
 ## Desktop UI Workflow
 
@@ -162,6 +162,7 @@ The Sync panel exposes:
 - `Derived Offset`
   - fine adjustment in seconds
   - this is the computed or manually refined time delta between the two timelines
+  - this controls sync, not export-only clock correction
 - `Export Time Shift`
   - optional export-only correction from `-5 h` to `+5 h`
   - default is `0 h`
@@ -188,6 +189,15 @@ When a GPX file is loaded, the map shows:
 - marker locations for selected photos
 
 You can scrub on the track and use `Sync Current Video Frame To GPX Cursor` to align the current frame against the GPX cursor.
+
+The intended semantics are:
+
+- `Timestamp Authority = GPX`
+  - GPX is treated as the correct timeline
+  - syncing derives the video start relative to the chosen GPX point
+- `Timestamp Authority = Video`
+  - the video timestamp is treated as the correct timeline
+  - syncing derives the required offset against the GPX track
 
 ### 5. Export
 
@@ -296,8 +306,9 @@ This project is designed for the reality that drone-camera timestamps can be wro
 
 The important rule is:
 
-- with GPX loaded, the final export timestamp comes from the resolved sync result
-- without GPX, the export timestamp falls back to the resolved video time plus offset / hour shift
+- with GPX loaded, the sync result determines the map-matched time
+- without GPX, the sync result falls back to the resolved video time plus sync offset
+- `Export Time Shift` is applied afterward only to the written export timestamp
 
 Video metadata such as `creation_time`, `encoded_date`, or `tagged_date` is mainly used as an initial reference, not as absolute truth.
 
@@ -329,7 +340,7 @@ The manifest also includes values such as:
 - latitude / longitude / altitude, if available
 - sync mode
 - offset seconds
-- shift hours
+- export time shift
 
 ## Repository Layout
 
