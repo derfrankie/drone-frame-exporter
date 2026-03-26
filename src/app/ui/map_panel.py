@@ -4,11 +4,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QStackedLayout, QWidget
 
 from app.ui.track_view import TrackMapWidget
-
-try:
-    from app.ui.web_map import LeafletMapWidget
-except Exception:  # pragma: no cover - fallback when WebEngine is unavailable
-    LeafletMapWidget = None
+from core.gpx import GpxTrackIndex
 
 
 class MapPanel(QWidget):
@@ -22,21 +18,16 @@ class MapPanel(QWidget):
         self._active = self._fallback
         self._fallback.pointScrubbed.connect(self.pointScrubbed)
 
-        if LeafletMapWidget is not None:
-            self._web_map = LeafletMapWidget(self)
-            self._layout.addWidget(self._web_map)
-            self._layout.setCurrentWidget(self._web_map)
-            self._active = self._web_map
-            self._web_map.pointScrubbed.connect(self.pointScrubbed)
-        else:
-            self._web_map = None
+        self._web_map = None
 
     @property
     def uses_web_map(self) -> bool:
         return self._web_map is not None and self._active is self._web_map
 
-    def set_track(self, gpx_index) -> None:
+    def set_track(self, gpx_index: GpxTrackIndex | None) -> None:
         self._fallback.set_track(gpx_index)
+        if gpx_index is not None:
+            self._ensure_web_map()
 
     def set_markers(self, markers: list[dict]) -> None:
         self._fallback.set_markers(markers)
@@ -54,6 +45,7 @@ class MapPanel(QWidget):
         current_point: dict | None,
         scrub_point: dict | None,
     ) -> None:
+        self._ensure_web_map()
         if self._web_map is not None:
             self._web_map.set_map_state(
                 track_points=track_points,
@@ -61,3 +53,16 @@ class MapPanel(QWidget):
                 current_point=current_point,
                 scrub_point=scrub_point,
             )
+
+    def _ensure_web_map(self) -> None:
+        if self._web_map is not None:
+            return
+        try:
+            from app.ui.web_map import LeafletMapWidget
+        except Exception:  # pragma: no cover - fallback when WebEngine is unavailable
+            return
+        self._web_map = LeafletMapWidget(self)
+        self._layout.addWidget(self._web_map)
+        self._layout.setCurrentWidget(self._web_map)
+        self._active = self._web_map
+        self._web_map.pointScrubbed.connect(self.pointScrubbed)

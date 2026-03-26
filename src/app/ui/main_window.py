@@ -76,6 +76,7 @@ class DroneFrameExtractorWindow(QMainWindow):
         self._gpx_scrub_index = 0
         self._cached_track_samples: list[dict] = []
         self._current_map_point = None
+        self._pending_first_frame_seek = False
         self._map_sync_timer = QTimer(self)
         self._map_sync_timer.setSingleShot(True)
         self._map_sync_timer.timeout.connect(self._sync_map_state)
@@ -91,14 +92,16 @@ class DroneFrameExtractorWindow(QMainWindow):
         self._build_ui()
         self._connect_signals()
 
+        self._pending_initial_video = initial_video
+        self._pending_initial_gpx = initial_gpx
+
         if self.output_dir is not None:
             self.output_edit.setText(str(self.output_dir))
         if initial_video is not None:
             self.video_path_edit.setText(str(initial_video))
-            self._load_video(initial_video)
         if initial_gpx is not None:
             self.gpx_path_edit.setText(str(initial_gpx))
-            self._load_gpx(initial_gpx)
+        QTimer.singleShot(0, self._load_initial_files)
 
     def _build_ui(self) -> None:
         root = QWidget(self)
@@ -330,6 +333,14 @@ class DroneFrameExtractorWindow(QMainWindow):
         layout.addWidget(self.track_summary)
         return widget
 
+    def _load_initial_files(self) -> None:
+        if self._pending_initial_video is not None:
+            self._load_video(self._pending_initial_video)
+            self._pending_initial_video = None
+        if self._pending_initial_gpx is not None:
+            self._load_gpx(self._pending_initial_gpx)
+            self._pending_initial_gpx = None
+
     def _connect_signals(self) -> None:
         self.video_button.clicked.connect(self._choose_video)
         self.gpx_button.clicked.connect(self._choose_gpx)
@@ -341,6 +352,7 @@ class DroneFrameExtractorWindow(QMainWindow):
         self.step_forward_5_button.clicked.connect(lambda: self._step_frames(5))
 
         self.player.durationChanged.connect(self._on_duration_changed)
+        self.player.mediaStatusChanged.connect(self._on_media_status_changed)
         self.player.positionChanged.connect(self._on_position_changed)
         self.player.playbackStateChanged.connect(self._refresh_play_pause_button)
         self.position_slider.sliderPressed.connect(self._on_slider_pressed)
@@ -351,6 +363,7 @@ class DroneFrameExtractorWindow(QMainWindow):
         self.remove_marker_button.clicked.connect(self._remove_selected_marker)
         self.jump_marker_button.clicked.connect(self._jump_to_selected_marker)
         self.marker_list.itemSelectionChanged.connect(self._refresh_track_view)
+        self.marker_list.itemDoubleClicked.connect(self._jump_to_marker_item)
 
         self.sync_mode_combo.currentTextChanged.connect(self._refresh_from_sync_change)
         self.reference_mode_combo.currentTextChanged.connect(self._refresh_from_sync_change)
@@ -382,27 +395,36 @@ class DroneFrameExtractorWindow(QMainWindow):
             self.settings.setValue("last_output_dir", path)
 
     def _load_video(self, path: Path) -> None:
+        self.statusBar().showMessage("Inspecting video metadata…")
+        QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             self.video_metadata = inspect_video(path)
         except DroneFrameExtractorError as exc:
             QMessageBox.critical(self, "Video Error", str(exc))
+            self.statusBar().showMessage("Video loading failed.")
             return
+        finally:
+            QApplication.restoreOverrideCursor()
         preferred_export_format = "tiff" if is_wide_gamut_source(self.video_metadata) else "jpg"
         export_index = self.export_format_combo.findText(preferred_export_format)
         if export_index >= 0:
             self.export_format_combo.setCurrentIndex(export_index)
+        self._pending_first_frame_seek = True
         self.player.setSource(QUrl.fromLocalFile(str(path.resolve())))
-        self.statusBar().showMessage(
-            f"Loaded video: {path.name}  |  export format set to {preferred_export_format}"
-        )
+        self.statusBar().showMessage(f"Loaded video metadata: {path.name}  |  preparing first frame…")
         self._refresh_current_info()
 
     def _load_gpx(self, path: Path) -> None:
+        self.statusBar().showMessage("Loading GPX track…")
+        QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             self.gpx_index = load_gpx_track(path)
         except DroneFrameExtractorError as exc:
             QMessageBox.critical(self, "GPX Error", str(exc))
+            self.statusBar().showMessage("GPX loading failed.")
             return
+        finally:
+            QApplication.restoreOverrideCursor()
         self.track_widget.set_track(self.gpx_index)
         self._cached_track_samples = [
             {
@@ -425,6 +447,18 @@ class DroneFrameExtractorWindow(QMainWindow):
         with QSignalBlocker(self.position_slider):
             self.position_slider.setRange(0, max(duration_ms, 0))
         self._refresh_position_label(self.player.position(), duration_ms)
+
+    def _on_media_status_changed(self, status: QMediaPlayer.MediaStatus) -> None:
+        if status == QMediaPlayer.LoadedMedia and self._pending_first_frame_seek:
+            self._pending_first_frame_seek = False
+            self.player.pause()
+            self.player.setPosition(0)
+            QTimer.singleShot(0, lambda: self.player.setPosition(1))
+            QTimer.singleShot(30, lambda: self.player.setPosition(0))
+            if self.video_metadata is not None:
+                self.statusBar().showMessage(
+                    f"Loaded video: {self.video_metadata.path.name}  |  first frame ready"
+                )
 
     def _on_position_changed(self, position_ms: int) -> None:
         if not self._is_scrubbing:
@@ -492,6 +526,12 @@ class DroneFrameExtractorWindow(QMainWindow):
             return
         marker = self.marker_entries[current_row]
         self.player.setPosition(int(marker.frame_seconds * 1000))
+
+    def _jump_to_marker_item(self, item: QListWidgetItem) -> None:
+        row = self.marker_list.row(item)
+        if row < 0 or row >= len(self.marker_entries):
+            return
+        self.player.setPosition(int(self.marker_entries[row].frame_seconds * 1000))
 
     def _refresh_marker_list(self) -> None:
         self.marker_list.clear()
