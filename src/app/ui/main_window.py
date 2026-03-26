@@ -278,6 +278,9 @@ class DroneFrameExtractorWindow(QMainWindow):
         self.current_info = QTextEdit()
         self.current_info.setReadOnly(True)
         self.current_info.setMinimumHeight(132)
+        self.track_summary = QTextEdit()
+        self.track_summary.setReadOnly(True)
+        self.track_summary.setMinimumHeight(132)
 
         transport = QHBoxLayout()
         self.step_back_5_button = QPushButton("-5 Frames")
@@ -300,7 +303,10 @@ class DroneFrameExtractorWindow(QMainWindow):
         layout.addLayout(transport)
         layout.addWidget(self.position_slider)
         layout.addWidget(self.position_label)
-        layout.addWidget(self.current_info)
+        info_row = QHBoxLayout()
+        info_row.addWidget(self.current_info, 1)
+        info_row.addWidget(self.track_summary, 1)
+        layout.addLayout(info_row)
         return widget
 
     def _build_right_panel(self) -> QWidget:
@@ -320,9 +326,6 @@ class DroneFrameExtractorWindow(QMainWindow):
         self.gpx_scrub_slider.setRange(0, 0)
         self.gpx_scrub_label = QLabel("GPX Cursor: no track loaded")
         self.align_button = QPushButton("Align Current Video Frame To GPX Cursor")
-        self.track_summary = QTextEdit()
-        self.track_summary.setReadOnly(True)
-        self.track_summary.setMinimumHeight(180)
 
         layout.addWidget(heading)
         layout.addWidget(description)
@@ -330,7 +333,6 @@ class DroneFrameExtractorWindow(QMainWindow):
         layout.addWidget(self.gpx_scrub_slider)
         layout.addWidget(self.gpx_scrub_label)
         layout.addWidget(self.align_button)
-        layout.addWidget(self.track_summary)
         return widget
 
     def _load_initial_files(self) -> None:
