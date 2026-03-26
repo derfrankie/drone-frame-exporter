@@ -22,7 +22,7 @@ What already works:
 - optional GPX loading
 - visual frame selection in a PySide6 UI
 - play/pause, scrubbing, and `1` / `5` frame stepping
-- `video-first` and `gpx-first` sync reference modes
+- `Video` and `GPX` timestamp authority modes
 - second offset and hour shift controls
 - GPX cursor alignment on a zoomable OpenStreetMap view
 - JPG export for standard footage
@@ -53,7 +53,7 @@ Current limitations:
   - `offset`
   - `relative-start`
   - `absolute-video`
-  - `video-first` or `gpx-first`
+  - choose whether `Video` or `GPX` is the authoritative timeline
   - second-level offset
   - fixed hour shift from `-5 h` to `+5 h`
 - Map-based positioning
@@ -156,14 +156,16 @@ The Sync panel exposes:
   - `offset`
   - `relative-start`
   - `absolute-video`
-- `Reference`
-  - `video-first`
-  - `gpx-first`
-- `Offset`
+- `Timestamp Authority`
+  - `Video`
+  - `GPX`
+- `Derived Offset`
   - fine adjustment in seconds
-- `Shift Hours`
-  - coarse correction from `-5 h` to `+5 h`
+  - this is the computed or manually refined time delta between the two timelines
+- `Export Time Shift`
+  - optional export-only correction from `-5 h` to `+5 h`
   - default is `0 h`
+  - does not move the GPX mapping on the map
 - `Relative Start`
   - used only in `relative-start` mode
 
@@ -185,7 +187,7 @@ When a GPX file is loaded, the map shows:
 - the GPX cursor position
 - marker locations for selected photos
 
-You can scrub on the track and use `Align Current Video Frame To GPX Cursor` to derive a practical hour shift plus second offset.
+You can scrub on the track and use `Sync Current Video Frame To GPX Cursor` to align the current frame against the GPX cursor.
 
 ### 5. Export
 

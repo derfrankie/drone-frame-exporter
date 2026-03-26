@@ -19,7 +19,7 @@ from core.sync import (
     SYNC_MODE_OFFSET,
     SYNC_MODE_RELATIVE_START,
 )
-from core.video import inspect_video, is_wide_gamut_source
+from core.video import inspect_video, is_wide_gamut_source, load_embedded_gps_track
 
 app = typer.Typer(help="Extract JPG frames from local drone videos and sync them with GPX tracks.")
 console = Console()
@@ -44,6 +44,7 @@ def inspect_video_command(video: Path = typer.Option(..., exists=True, dir_okay=
     table.add_row("Color Primaries", metadata.color_primaries or "unknown")
     table.add_row("Color Transfer", metadata.color_transfer or "unknown")
     table.add_row("Recommended Export", "tiff" if is_wide_gamut_source(metadata) else "jpg")
+    table.add_row("Embedded GPS", metadata.embedded_gps_format or "none")
     console.print(table)
 
 
@@ -94,7 +95,11 @@ def export_command(
     try:
         frame_values = _parse_frame_values(times=times, frame=frame)
         video_metadata = inspect_video(video)
-        gpx_index = load_gpx_track(gpx) if gpx is not None else None
+        gpx_index = (
+            load_gpx_track(gpx)
+            if gpx is not None
+            else load_embedded_gps_track(video, anchor_timestamp=video_metadata.creation_time)
+        )
         relative_start_time = _parse_iso_datetime(start_time) if start_time else None
         frame_requests = [ExportFrameRequest(frame_seconds=value) for value in frame_values]
         records, manifest_path = export_frames(

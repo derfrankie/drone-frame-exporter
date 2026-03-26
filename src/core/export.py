@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from core.gpx import GpxTrackIndex
@@ -49,6 +49,7 @@ def export_frames(
             output_dir=output_dir,
             video_metadata=video_metadata,
             resolved=resolved,
+            export_shift_hours=shift_hours,
             filename_middle=filename_middle,
             used_paths=used_paths,
             export_format=export_format,
@@ -60,8 +61,9 @@ def export_frames(
             quality=jpg_quality,
             output_format=export_format,
         )
-        write_image_metadata(output_path, resolved.resolved_timestamp, resolved.gpx_point)
-        records.append(_record_from_export(video_metadata, output_path, resolved))
+        export_timestamp = _apply_export_shift(resolved.resolved_timestamp, shift_hours)
+        write_image_metadata(output_path, export_timestamp, resolved.gpx_point)
+        records.append(_record_from_export(video_metadata, output_path, resolved, export_shift_hours=shift_hours))
 
     manifest_path = write_manifest(
         output_dir=output_dir,
@@ -105,13 +107,14 @@ def _build_output_path(
     output_dir: Path,
     video_metadata: VideoMetadata,
     resolved: ResolvedFrameTime,
+    export_shift_hours: float = 0.0,
     filename_middle: str = "",
     used_paths: set[Path] | None = None,
     export_format: str = "jpg",
 ) -> Path:
     filename = build_output_filename(
         original_stem=video_metadata.path.stem,
-        timestamp=resolved.resolved_timestamp,
+        timestamp=_apply_export_shift(resolved.resolved_timestamp, export_shift_hours),
         filename_middle=filename_middle,
         extension=export_format,
     )
@@ -123,7 +126,7 @@ def _build_output_path(
     while candidate in used_paths or candidate.exists():
         candidate = output_dir / build_output_filename(
             original_stem=video_metadata.path.stem,
-            timestamp=resolved.resolved_timestamp,
+            timestamp=_apply_export_shift(resolved.resolved_timestamp, export_shift_hours),
             filename_middle=filename_middle,
             suffix=f"{counter:02d}",
             extension=export_format,
@@ -163,6 +166,7 @@ def _record_from_export(
     video_metadata: VideoMetadata,
     output_path: Path,
     resolved: ResolvedFrameTime,
+    export_shift_hours: float = 0.0,
 ) -> ExportedFrameRecord:
     video_timestamp = (
         ensure_utc(video_metadata.creation_time).isoformat()
@@ -173,7 +177,7 @@ def _record_from_export(
         source_video=str(video_metadata.path),
         frame_seconds=resolved.video_time_seconds,
         video_timestamp=video_timestamp,
-        resolved_timestamp=ensure_utc(resolved.resolved_timestamp).isoformat(),
+        resolved_timestamp=ensure_utc(_apply_export_shift(resolved.resolved_timestamp, export_shift_hours)).isoformat(),
         gpx_timestamp=ensure_utc(resolved.gpx_point.timestamp).isoformat() if resolved.gpx_point else None,
         latitude=resolved.gpx_point.latitude if resolved.gpx_point else None,
         longitude=resolved.gpx_point.longitude if resolved.gpx_point else None,
@@ -181,5 +185,9 @@ def _record_from_export(
         output_file=str(output_path),
         sync_mode=resolved.sync_mode,
         offset_seconds=resolved.offset_seconds,
-        shift_hours=resolved.shift_hours,
+        shift_hours=export_shift_hours,
     )
+
+
+def _apply_export_shift(timestamp: datetime, shift_hours: float) -> datetime:
+    return timestamp + timedelta(hours=shift_hours)

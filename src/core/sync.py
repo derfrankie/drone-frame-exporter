@@ -57,7 +57,7 @@ def resolve_frame_time(
         gpx_point=gpx_point,
         sync_mode=sync_mode,
         offset_seconds=applied_offset,
-        shift_hours=shift_hours,
+        shift_hours=0.0,
     )
 
 
@@ -73,24 +73,22 @@ def _resolve_base_timestamp(
     if sync_mode in {SYNC_MODE_MANUAL_OFFSET, "manual-offset"}:
         if offset_seconds is None:
             raise SyncConfigurationError("Offset mode requires --offset-seconds.")
-        directional_offset = offset_seconds if reference_mode == REFERENCE_VIDEO_FIRST else -offset_seconds
         if video_metadata.creation_time is not None:
             base = ensure_utc_assuming_local(video_metadata.creation_time) + timedelta(
-                hours=shift_hours,
-                seconds=directional_offset,
+                seconds=offset_seconds,
             )
             return base, offset_seconds
         if gpx_index is None:
             raise SyncConfigurationError(
                 "Offset mode without a video timestamp requires a GPX track as the time reference."
             )
-        base = gpx_index.start_time + timedelta(hours=shift_hours, seconds=directional_offset)
+        base = gpx_index.start_time + timedelta(seconds=offset_seconds)
         return base, offset_seconds
 
     if sync_mode == SYNC_MODE_RELATIVE_START:
         if relative_start_time is None:
             raise SyncConfigurationError("Relative start mode requires --start-time.")
-        normalized = ensure_utc(relative_start_time) + timedelta(hours=shift_hours)
+        normalized = ensure_utc(relative_start_time)
         offset = (normalized - gpx_index.start_time).total_seconds() if gpx_index is not None else None
         return normalized, offset
 
@@ -99,7 +97,7 @@ def _resolve_base_timestamp(
             raise SyncConfigurationError(
                 "Absolute video mode requires a readable video creation timestamp."
             )
-        base = ensure_utc_assuming_local(video_metadata.creation_time) + timedelta(hours=shift_hours)
+        base = ensure_utc_assuming_local(video_metadata.creation_time)
         return base, 0.0
 
     raise SyncConfigurationError(f"Unsupported sync mode: {sync_mode}")

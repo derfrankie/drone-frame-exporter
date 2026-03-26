@@ -36,12 +36,14 @@ class LeafletMapWidget(QWebEngineView):
         markers: list[dict],
         current_point: dict | None,
         scrub_point: dict | None,
+        track_key: str | None = None,
     ) -> None:
         state = {
             "trackPoints": track_points,
             "markers": markers,
             "currentPoint": current_point,
             "scrubPoint": scrub_point,
+            "trackKey": track_key,
         }
         if not self._loaded:
             self._pending_state = state
@@ -151,6 +153,11 @@ def _leaflet_document() -> str:
         scrubMarker = makeCircle([state.scrubPoint.latitude, state.scrubPoint.longitude], '#7bdff2', 7).addTo(map);
       } else {
         scrubMarker = null;
+      }
+
+      if (state.trackKey && state.trackKey !== window.__trackKey) {
+        window.__trackKey = state.trackKey;
+        window.__fitDone = false;
       }
 
       if (latlngs.length && !window.__fitDone) {

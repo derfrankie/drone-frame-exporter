@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QSignalBlocker, QTimer, Qt, QUrl
+from PySide6.QtCore import QDateTime, QSettings, QSignalBlocker, QTimer, Qt, QUrl
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
@@ -47,7 +47,8 @@ from core.sync import (
     SYNC_MODE_RELATIVE_START,
     resolve_frame_time,
 )
-from core.video import inspect_video, is_wide_gamut_source
+from core.utils import ensure_utc_assuming_local
+from core.video import inspect_video, is_wide_gamut_source, load_embedded_gps_track
 
 
 @dataclass(slots=True)
@@ -77,6 +78,11 @@ class DroneFrameExtractorWindow(QMainWindow):
         self._cached_track_samples: list[dict] = []
         self._current_map_point = None
         self._pending_first_frame_seek = False
+        self._pause_after_first_frame = False
+        self._gpx_source: str | None = "external" if initial_gpx is not None else None
+        self._current_track_key: str | None = None
+        self._auto_embedded_offset_applied = False
+        self._relative_start_override_utc: datetime | None = None
         self._map_sync_timer = QTimer(self)
         self._map_sync_timer.setSingleShot(True)
         self._map_sync_timer.timeout.connect(self._sync_map_state)
@@ -201,7 +207,8 @@ class DroneFrameExtractorWindow(QMainWindow):
         self.sync_mode_combo = QComboBox()
         self.sync_mode_combo.addItems([SYNC_MODE_OFFSET, SYNC_MODE_RELATIVE_START, SYNC_MODE_ABSOLUTE_VIDEO])
         self.reference_mode_combo = QComboBox()
-        self.reference_mode_combo.addItems([REFERENCE_VIDEO_FIRST, REFERENCE_GPX_FIRST])
+        self.reference_mode_combo.addItem("Video", REFERENCE_VIDEO_FIRST)
+        self.reference_mode_combo.addItem("GPX", REFERENCE_GPX_FIRST)
         self.offset_spin = QDoubleSpinBox()
         self.offset_spin.setRange(-864000.0, 864000.0)
         self.offset_spin.setDecimals(3)
@@ -217,9 +224,9 @@ class DroneFrameExtractorWindow(QMainWindow):
         self.start_time_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
         self.start_time_edit.setDateTime(datetime.utcnow())
         sync_form.addRow("Mode", self.sync_mode_combo)
-        sync_form.addRow("Reference", self.reference_mode_combo)
-        sync_form.addRow("Offset", self.offset_spin)
-        sync_form.addRow("Shift Hours", self.shift_hours_combo)
+        sync_form.addRow("Timestamp Authority", self.reference_mode_combo)
+        sync_form.addRow("Derived Offset", self.offset_spin)
+        sync_form.addRow("Export Time Shift", self.shift_hours_combo)
         sync_form.addRow("Relative Start", self.start_time_edit)
 
         markers_group = QGroupBox("Selected Photos", widget)
@@ -325,11 +332,22 @@ class DroneFrameExtractorWindow(QMainWindow):
         self.gpx_scrub_slider = QSlider(Qt.Horizontal)
         self.gpx_scrub_slider.setRange(0, 0)
         self.gpx_scrub_label = QLabel("GPX Cursor: no track loaded")
-        self.align_button = QPushButton("Align Current Video Frame To GPX Cursor")
+        self.align_button = QPushButton("Sync Current Video Frame To GPX Cursor")
+        self.gpx_step_back_5_button = QPushButton("-5")
+        self.gpx_step_back_1_button = QPushButton("-1")
+        self.gpx_step_forward_1_button = QPushButton("+1")
+        self.gpx_step_forward_5_button = QPushButton("+5")
 
         layout.addWidget(heading)
         layout.addWidget(description)
         layout.addWidget(self.track_widget, 1)
+        gpx_transport = QHBoxLayout()
+        gpx_transport.addWidget(self.gpx_step_back_5_button)
+        gpx_transport.addWidget(self.gpx_step_back_1_button)
+        gpx_transport.addStretch(1)
+        gpx_transport.addWidget(self.gpx_step_forward_1_button)
+        gpx_transport.addWidget(self.gpx_step_forward_5_button)
+        layout.addLayout(gpx_transport)
         layout.addWidget(self.gpx_scrub_slider)
         layout.addWidget(self.gpx_scrub_label)
         layout.addWidget(self.align_button)
@@ -371,10 +389,14 @@ class DroneFrameExtractorWindow(QMainWindow):
         self.reference_mode_combo.currentTextChanged.connect(self._refresh_from_sync_change)
         self.offset_spin.valueChanged.connect(self._refresh_from_sync_change)
         self.shift_hours_combo.currentIndexChanged.connect(self._refresh_from_sync_change)
-        self.start_time_edit.dateTimeChanged.connect(self._refresh_from_sync_change)
+        self.start_time_edit.dateTimeChanged.connect(self._on_relative_start_changed)
         self.export_button.clicked.connect(self._export_selected_frames)
         self.gpx_scrub_slider.valueChanged.connect(self._on_gpx_scrub_changed)
         self.align_button.clicked.connect(self._align_video_to_gpx_cursor)
+        self.gpx_step_back_5_button.clicked.connect(lambda: self._step_gpx_cursor(-5))
+        self.gpx_step_back_1_button.clicked.connect(lambda: self._step_gpx_cursor(-1))
+        self.gpx_step_forward_1_button.clicked.connect(lambda: self._step_gpx_cursor(1))
+        self.gpx_step_forward_5_button.clicked.connect(lambda: self._step_gpx_cursor(5))
         self.track_widget.pointScrubbed.connect(self._on_track_scrubbed)
 
     def _choose_video(self) -> None:
@@ -411,9 +433,14 @@ class DroneFrameExtractorWindow(QMainWindow):
         export_index = self.export_format_combo.findText(preferred_export_format)
         if export_index >= 0:
             self.export_format_combo.setCurrentIndex(export_index)
+        self._reset_embedded_auto_sync_if_needed()
+        if self._gpx_source == "embedded":
+            self._clear_track_state(clear_gpx_field=True)
         self._pending_first_frame_seek = True
         self.player.setSource(QUrl.fromLocalFile(str(path.resolve())))
         self.statusBar().showMessage(f"Loaded video metadata: {path.name}  |  preparing first frame…")
+        if self._gpx_source != "external":
+            self._try_load_embedded_gpx(path)
         self._refresh_current_info()
 
     def _load_gpx(self, path: Path) -> None:
@@ -427,6 +454,15 @@ class DroneFrameExtractorWindow(QMainWindow):
             return
         finally:
             QApplication.restoreOverrideCursor()
+        self.gpx_path_edit.setText(str(path))
+        self._load_track_index(self.gpx_index, source="external", status_label=f"Loaded GPX: {path.name}")
+
+    def _load_track_index(self, track_index: GpxTrackIndex, source: str, status_label: str) -> None:
+        self.gpx_index = track_index
+        self._gpx_source = source
+        self._current_track_key = (
+            f"{source}:{len(track_index.points)}:{track_index.start_time.isoformat()}:{track_index.end_time.isoformat()}"
+        )
         self.track_widget.set_track(self.gpx_index)
         self._cached_track_samples = [
             {
@@ -442,8 +478,86 @@ class DroneFrameExtractorWindow(QMainWindow):
             self.gpx_scrub_slider.setValue(0)
         self._gpx_scrub_index = 0
         self._refresh_gpx_scrub_label()
-        self.statusBar().showMessage(f"Loaded GPX: {path.name}")
+        self.statusBar().showMessage(status_label)
         self._refresh_track_view()
+
+    def _clear_track_state(self, clear_gpx_field: bool = False) -> None:
+        self.gpx_index = None
+        self._gpx_source = None
+        self._current_track_key = None
+        self._current_map_point = None
+        if clear_gpx_field:
+            self.gpx_path_edit.clear()
+        self.track_widget.set_track(None)
+        self.track_widget.set_markers([])
+        self.track_widget.set_current_point(None)
+        self.track_widget.set_scrub_point(None)
+        self.track_widget.set_web_map_state(
+            track_points=[],
+            markers=[],
+            current_point=None,
+            scrub_point=None,
+            track_key="empty",
+        )
+        self._cached_track_samples = []
+        with QSignalBlocker(self.gpx_scrub_slider):
+            self.gpx_scrub_slider.setRange(0, 0)
+            self.gpx_scrub_slider.setValue(0)
+        self._gpx_scrub_index = 0
+        self._refresh_gpx_scrub_label()
+        self._refresh_track_summary(self.player.position() / 1000.0)
+
+    def _reset_embedded_auto_sync_if_needed(self) -> None:
+        if not self._auto_embedded_offset_applied:
+            return
+        self.sync_mode_combo.setCurrentText(SYNC_MODE_OFFSET)
+        reference_index = self.reference_mode_combo.findData(REFERENCE_VIDEO_FIRST)
+        if reference_index >= 0:
+            self.reference_mode_combo.setCurrentIndex(reference_index)
+        self.offset_spin.setValue(0.0)
+        zero_shift_index = self.shift_hours_combo.findData(0)
+        if zero_shift_index >= 0:
+            self.shift_hours_combo.setCurrentIndex(zero_shift_index)
+        self._auto_embedded_offset_applied = False
+
+    def _try_load_embedded_gpx(self, video_path: Path) -> None:
+        if self.video_metadata is None or not self.video_metadata.has_embedded_gps:
+            if self._gpx_source == "embedded":
+                self._clear_track_state(clear_gpx_field=True)
+            return
+
+        self.statusBar().showMessage("Loading embedded GoPro GPS track…")
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            embedded_track = load_embedded_gps_track(
+                video_path,
+                anchor_timestamp=self.video_metadata.creation_time,
+            )
+        except DroneFrameExtractorError:
+            embedded_track = None
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        if embedded_track is None:
+            self._clear_track_state(clear_gpx_field=True)
+            self._reset_embedded_auto_sync_if_needed()
+            self.statusBar().showMessage("Embedded telemetry found, but no usable GPS track was extracted.")
+            return
+        self.gpx_path_edit.setText("[Embedded GPS from video]")
+        self.sync_mode_combo.setCurrentText(SYNC_MODE_OFFSET)
+        reference_index = self.reference_mode_combo.findData(REFERENCE_VIDEO_FIRST)
+        if reference_index >= 0:
+            self.reference_mode_combo.setCurrentIndex(reference_index)
+        self.offset_spin.setValue(0.0)
+        zero_shift_index = self.shift_hours_combo.findData(0)
+        if zero_shift_index >= 0:
+            self.shift_hours_combo.setCurrentIndex(zero_shift_index)
+        self._auto_embedded_offset_applied = True
+        self._load_track_index(
+            embedded_track,
+            source="embedded",
+            status_label=f"Loaded embedded GPS track from {video_path.name}",
+        )
 
     def _on_duration_changed(self, duration_ms: int) -> None:
         with QSignalBlocker(self.position_slider):
@@ -453,13 +567,13 @@ class DroneFrameExtractorWindow(QMainWindow):
     def _on_media_status_changed(self, status: QMediaPlayer.MediaStatus) -> None:
         if status == QMediaPlayer.LoadedMedia and self._pending_first_frame_seek:
             self._pending_first_frame_seek = False
-            self.player.pause()
+            self._pause_after_first_frame = True
             self.player.setPosition(0)
-            QTimer.singleShot(0, lambda: self.player.setPosition(1))
-            QTimer.singleShot(30, lambda: self.player.setPosition(0))
+            self.player.play()
+            QTimer.singleShot(250, self._finalize_first_frame_seek)
             if self.video_metadata is not None:
                 self.statusBar().showMessage(
-                    f"Loaded video: {self.video_metadata.path.name}  |  first frame ready"
+                    f"Loaded video: {self.video_metadata.path.name}  |  rendering first frame…"
                 )
 
     def _on_position_changed(self, position_ms: int) -> None:
@@ -467,7 +581,21 @@ class DroneFrameExtractorWindow(QMainWindow):
             with QSignalBlocker(self.position_slider):
                 self.position_slider.setValue(position_ms)
         self._refresh_position_label(position_ms, self.player.duration())
+        if self._pause_after_first_frame and position_ms > 0:
+            self._finalize_first_frame_seek()
         self._refresh_current_info()
+
+    def _finalize_first_frame_seek(self) -> None:
+        if not self._pause_after_first_frame:
+            return
+        self._pause_after_first_frame = False
+        self.player.pause()
+        if self.player.position() <= 0:
+            self.player.setPosition(1)
+        if self.video_metadata is not None:
+            self.statusBar().showMessage(
+                f"Loaded video: {self.video_metadata.path.name}  |  first frame ready"
+            )
 
     def _on_slider_pressed(self) -> None:
         self._is_scrubbing = True
@@ -563,6 +691,10 @@ class DroneFrameExtractorWindow(QMainWindow):
             f"Creation time: {self.video_metadata.creation_time.isoformat() if self.video_metadata.creation_time else 'missing'}",
             f"Resolution: {self.video_metadata.width}x{self.video_metadata.height}",
         ]
+        if self._gpx_source == "embedded":
+            lines.append("Embedded GPS: loaded")
+        elif self.video_metadata.has_embedded_gps:
+            lines.append("Embedded telemetry: detected, but no usable GPS track loaded")
         if is_wide_gamut_source(self.video_metadata):
             lines.extend(
                 [
@@ -634,7 +766,7 @@ class DroneFrameExtractorWindow(QMainWindow):
             offset_seconds=self._effective_offset_seconds(),
             relative_start_time=self._relative_start_datetime(),
             shift_hours=self._selected_shift_hours(),
-            reference_mode=self.reference_mode_combo.currentText(),
+            reference_mode=self._selected_reference_mode(),
         )
         selected_row = self.marker_list.currentRow()
         selected_frame_seconds = (
@@ -667,7 +799,7 @@ class DroneFrameExtractorWindow(QMainWindow):
             offset_seconds=self._effective_offset_seconds(),
             relative_start_time=self._relative_start_datetime(),
             shift_hours=self._selected_shift_hours(),
-            reference_mode=self.reference_mode_combo.currentText(),
+            reference_mode=self._selected_reference_mode(),
         )
 
     def _effective_offset_seconds(self) -> float | None:
@@ -677,8 +809,14 @@ class DroneFrameExtractorWindow(QMainWindow):
 
     def _relative_start_datetime(self) -> datetime | None:
         if self.sync_mode_combo.currentText() == SYNC_MODE_RELATIVE_START:
-            return self.start_time_edit.dateTime().toPython()
+            if self._relative_start_override_utc is not None:
+                return self._relative_start_override_utc
+            return ensure_utc_assuming_local(self.start_time_edit.dateTime().toPython())
         return None
+
+    def _on_relative_start_changed(self, _value) -> None:
+        self._relative_start_override_utc = None
+        self._refresh_from_sync_change()
 
     def _on_gpx_scrub_changed(self, index: int) -> None:
         self._gpx_scrub_index = index
@@ -686,6 +824,12 @@ class DroneFrameExtractorWindow(QMainWindow):
         self.track_widget.set_scrub_point(self._current_gpx_scrub_point())
         self._refresh_track_summary(self.player.position() / 1000.0)
         self._sync_map_state()
+
+    def _step_gpx_cursor(self, delta: int) -> None:
+        if self.gpx_index is None:
+            return
+        new_index = min(max(self._gpx_scrub_index + delta, 0), len(self.gpx_index.points) - 1)
+        self.gpx_scrub_slider.setValue(new_index)
 
     def _on_track_scrubbed(self, index: int) -> None:
         with QSignalBlocker(self.gpx_scrub_slider):
@@ -713,17 +857,22 @@ class DroneFrameExtractorWindow(QMainWindow):
     def _build_track_summary_lines(self, frame_seconds: float, resolved) -> list[str]:
         lines = [
             f"Sync mode: {self.sync_mode_combo.currentText()}",
-            f"Reference mode: {self.reference_mode_combo.currentText()}",
-            f"Offset seconds: {self.offset_spin.value():.3f}",
-            f"Shift hours: {self._selected_shift_hours():.2f}",
+            f"Timestamp authority: {self.reference_mode_combo.currentText()}",
+            f"Derived offset: {self.offset_spin.value():.3f}s",
+            f"Export time shift: {self._selected_shift_hours():.2f}h",
             f"Current frame: {frame_seconds:.3f}s",
             f"Resolved time: {resolved.resolved_timestamp.isoformat()}",
         ]
+        if self._selected_shift_hours() != 0:
+            lines.append(
+                f"Export time: {(resolved.resolved_timestamp + timedelta(hours=self._selected_shift_hours())).isoformat()}"
+            )
         if self.gpx_index is None or resolved.gpx_point is None:
             lines.append("Track location: no GPX loaded")
             return lines
         lines.extend(
             [
+                f"Track source: {self._gpx_source or 'unknown'}",
                 f"Track location: {resolved.gpx_point.latitude:.6f}, {resolved.gpx_point.longitude:.6f}",
                 f"GPX cursor: {self._current_gpx_scrub_point().timestamp.isoformat() if self._current_gpx_scrub_point() else 'n/a'}",
                 f"Track window: {self.gpx_index.start_time.isoformat()} -> {self.gpx_index.end_time.isoformat()}",
@@ -748,7 +897,7 @@ class DroneFrameExtractorWindow(QMainWindow):
         if self.video_metadata is None or self.gpx_index is None:
             QMessageBox.information(self, "Missing Data", "Load both video and GPX before aligning.")
             return
-        if self.video_metadata.creation_time is None:
+        if self._selected_reference_mode() == REFERENCE_VIDEO_FIRST and self.video_metadata.creation_time is None:
             QMessageBox.information(
                 self,
                 "Missing Video Timestamp",
@@ -761,20 +910,32 @@ class DroneFrameExtractorWindow(QMainWindow):
         if target_point is None:
             return
 
-        video_frame_time = self.video_metadata.creation_time + timedelta(seconds=current_frame_seconds)
+        if self._selected_reference_mode() == REFERENCE_GPX_FIRST:
+            relative_start_time = target_point.timestamp - timedelta(seconds=current_frame_seconds)
+            self.sync_mode_combo.setCurrentText(SYNC_MODE_RELATIVE_START)
+            local_display_time = relative_start_time.astimezone().replace(tzinfo=None)
+            with QSignalBlocker(self.start_time_edit):
+                self.start_time_edit.setDateTime(QDateTime(local_display_time))
+            self._relative_start_override_utc = relative_start_time
+            self.offset_spin.setValue(0.0)
+            zero_shift_index = self.shift_hours_combo.findData(0)
+            if zero_shift_index >= 0:
+                self.shift_hours_combo.setCurrentIndex(zero_shift_index)
+            self.statusBar().showMessage(
+                f"Aligned current frame to GPX cursor with GPX as authority: video start set to {relative_start_time.isoformat()}"
+            )
+            self._refresh_from_sync_change()
+            return
+
+        video_start_time = ensure_utc_assuming_local(self.video_metadata.creation_time)
+        video_frame_time = video_start_time + timedelta(seconds=current_frame_seconds)
         total_delta_seconds = (target_point.timestamp - video_frame_time).total_seconds()
-        shift_hours = round(total_delta_seconds / 3600.0)
-        residual_offset = total_delta_seconds - (shift_hours * 3600.0)
-        if self.reference_mode_combo.currentText() == REFERENCE_GPX_FIRST:
-            residual_offset = -residual_offset
+        residual_offset = total_delta_seconds
 
         self.sync_mode_combo.setCurrentText(SYNC_MODE_OFFSET)
-        combo_index = self.shift_hours_combo.findData(max(-5, min(5, int(shift_hours))))
-        if combo_index >= 0:
-            self.shift_hours_combo.setCurrentIndex(combo_index)
         self.offset_spin.setValue(residual_offset)
         self.statusBar().showMessage(
-            f"Aligned current frame to GPX cursor: shift {shift_hours:+.0f}h, offset {residual_offset:+.3f}s"
+            f"Aligned current frame to GPX cursor: derived offset {residual_offset:+.3f}s"
         )
         self._refresh_from_sync_change()
 
@@ -813,6 +974,7 @@ class DroneFrameExtractorWindow(QMainWindow):
             ],
             current_point=self._point_to_map_dict(self._current_map_point),
             scrub_point=self._point_to_map_dict(self._current_gpx_scrub_point()),
+            track_key=self._current_track_key,
         )
 
     def _export_selected_frames(self) -> None:
@@ -845,7 +1007,7 @@ class DroneFrameExtractorWindow(QMainWindow):
                 export_format=self.export_format_combo.currentText(),
                 manifest_format=self.manifest_combo.currentText(),
                 filename_middle=self.filename_middle_edit.text(),
-                reference_mode=self.reference_mode_combo.currentText(),
+            reference_mode=self._selected_reference_mode(),
             )
         except Exception as exc:
             QMessageBox.critical(self, "Export Failed", str(exc))
@@ -863,6 +1025,9 @@ class DroneFrameExtractorWindow(QMainWindow):
 
     def _selected_shift_hours(self) -> float:
         return float(self.shift_hours_combo.currentData() or 0.0)
+
+    def _selected_reference_mode(self) -> str:
+        return str(self.reference_mode_combo.currentData() or REFERENCE_VIDEO_FIRST)
 
 
 def _format_ms(value: int) -> str:

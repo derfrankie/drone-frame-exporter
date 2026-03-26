@@ -44,6 +44,7 @@ class MapPanel(QWidget):
         markers: list[dict],
         current_point: dict | None,
         scrub_point: dict | None,
+        track_key: str | None = None,
     ) -> None:
         self._ensure_web_map()
         if self._web_map is not None:
@@ -52,6 +53,7 @@ class MapPanel(QWidget):
                 markers=markers,
                 current_point=current_point,
                 scrub_point=scrub_point,
+                track_key=track_key,
             )
 
     def _ensure_web_map(self) -> None:

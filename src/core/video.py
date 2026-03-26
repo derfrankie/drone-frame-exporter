@@ -6,8 +6,9 @@ from datetime import datetime
 from pathlib import Path
 
 from core.errors import FrameExtractionError, VideoInspectionError
-from core.models import VideoMetadata
-from core.utils import require_tool
+from core.gpx import GpxTrackIndex
+from core.models import GpxPoint, VideoMetadata
+from core.utils import ensure_utc, ensure_utc_assuming_local, require_tool
 
 
 def inspect_video(video_path: Path) -> VideoMetadata:
@@ -22,7 +23,7 @@ def inspect_video(video_path: Path) -> VideoMetadata:
         "-print_format",
         "json",
         "-show_entries",
-        "format=duration:format_tags=creation_time,date,encoded_date,tagged_date:stream=codec_type,codec_name,width,height,r_frame_rate,pix_fmt,bits_per_raw_sample,color_primaries,color_transfer,color_space:stream_tags=creation_time,date,encoded_date,tagged_date",
+        "format=duration,format_name:format_tags=creation_time,date,encoded_date,tagged_date:stream=codec_type,codec_name,codec_tag_string,width,height,r_frame_rate,pix_fmt,bits_per_raw_sample,color_primaries,color_transfer,color_space:stream_tags=creation_time,date,encoded_date,tagged_date,handler_name",
         str(video_path),
     ]
     result = subprocess.run(command, capture_output=True, text=True, check=False)
@@ -41,6 +42,7 @@ def inspect_video(video_path: Path) -> VideoMetadata:
     video_format = payload.get("format", {})
 
     creation_time = _pick_creation_time(video_format, video_stream)
+    has_embedded_gps, embedded_gps_format = _detect_embedded_gps(payload)
 
     return VideoMetadata(
         path=video_path,
@@ -56,6 +58,8 @@ def inspect_video(video_path: Path) -> VideoMetadata:
         color_primaries=video_stream.get("color_primaries") if video_stream else None,
         color_transfer=video_stream.get("color_transfer") if video_stream else None,
         color_space=video_stream.get("color_space") if video_stream else None,
+        has_embedded_gps=has_embedded_gps,
+        embedded_gps_format=embedded_gps_format,
     )
 
 
@@ -136,6 +140,126 @@ def _pick_creation_time(video_format: dict, video_stream: dict | None) -> dateti
             parsed = _parse_creation_time(tag_set.get(key))
             if parsed is not None:
                 return parsed
+    return None
+
+
+def _detect_embedded_gps(payload: dict) -> tuple[bool, str | None]:
+    for stream in payload.get("streams", []):
+        codec_type = (stream.get("codec_type") or "").lower()
+        codec_tag = (stream.get("codec_tag_string") or "").lower()
+        codec_name = (stream.get("codec_name") or "").lower()
+        handler_name = (stream.get("tags", {}).get("handler_name") or "").lower()
+        if codec_type == "data" and ("gpmd" in {codec_tag, codec_name} or "gopro met" in handler_name):
+            return True, "gpmd"
+    return False, None
+
+
+def load_embedded_gps_track(
+    video_path: Path,
+    anchor_timestamp: datetime | None = None,
+) -> GpxTrackIndex | None:
+    exiftool = require_tool("exiftool")
+    command = [
+        exiftool,
+        "-m",
+        "-ee",
+        "-api",
+        "LargeFileSupport=1",
+        "-n",
+        "-p",
+        "$GPSDateTime,$GPSLatitude,$GPSLongitude,$GPSAltitude",
+        str(video_path),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise VideoInspectionError(result.stderr.strip() or "exiftool failed to read embedded GPS data.")
+    points = _parse_embedded_gps_lines(result.stdout)
+    if not points:
+        return None
+    if anchor_timestamp is not None:
+        points = _rebase_gps_points(points, ensure_utc_assuming_local(anchor_timestamp))
+    return GpxTrackIndex(points)
+
+
+def _parse_embedded_gps_points(payload: list[dict]) -> list[GpxPoint]:
+    points: list[GpxPoint] = []
+    for item in payload:
+        timestamp = _parse_exiftool_gps_datetime(item.get("GPSDateTime"))
+        latitude = item.get("GPSLatitude")
+        longitude = item.get("GPSLongitude")
+        altitude = item.get("GPSAltitude")
+        if timestamp is None or latitude is None or longitude is None:
+            continue
+        try:
+            points.append(
+                GpxPoint(
+                    timestamp=ensure_utc(timestamp),
+                    latitude=float(latitude),
+                    longitude=float(longitude),
+                    elevation=float(altitude) if altitude is not None else None,
+                )
+            )
+        except (TypeError, ValueError):
+            continue
+    return points
+
+
+def _parse_embedded_gps_lines(output: str) -> list[GpxPoint]:
+    points: list[GpxPoint] = []
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 3:
+            continue
+        timestamp = _parse_exiftool_gps_datetime(parts[0])
+        if timestamp is None:
+            continue
+        try:
+            latitude = float(parts[1])
+            longitude = float(parts[2])
+            elevation = float(parts[3]) if len(parts) > 3 and parts[3] else None
+        except ValueError:
+            continue
+        points.append(
+            GpxPoint(
+                timestamp=ensure_utc(timestamp),
+                latitude=latitude,
+                longitude=longitude,
+                elevation=elevation,
+            )
+        )
+    return points
+
+
+def _rebase_gps_points(points: list[GpxPoint], anchor_timestamp: datetime) -> list[GpxPoint]:
+    if not points:
+        return points
+    base_timestamp = points[0].timestamp
+    rebased_points: list[GpxPoint] = []
+    for point in points:
+        delta = point.timestamp - base_timestamp
+        rebased_points.append(
+            GpxPoint(
+                timestamp=anchor_timestamp + delta,
+                latitude=point.latitude,
+                longitude=point.longitude,
+                elevation=point.elevation,
+            )
+        )
+    return rebased_points
+
+
+def _parse_exiftool_gps_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    normalized = value.strip()
+    for fmt in ("%Y:%m:%d %H:%M:%S.%f", "%Y:%m:%d %H:%M:%S"):
+        try:
+            return datetime.strptime(normalized, fmt)
+        except ValueError:
+            continue
     return None
 
 

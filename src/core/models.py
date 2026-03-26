@@ -20,6 +20,8 @@ class VideoMetadata:
     color_primaries: str | None = None
     color_transfer: str | None = None
     color_space: str | None = None
+    has_embedded_gps: bool = False
+    embedded_gps_format: str | None = None
 
 
 @dataclass(slots=True)

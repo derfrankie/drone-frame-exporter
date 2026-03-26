@@ -10,8 +10,13 @@ from core.sync import (
     SYNC_MODE_RELATIVE_START,
     resolve_frame_time,
 )
-from core.video import is_wide_gamut_source
-from core.video import _parse_creation_time
+from core.video import (
+    _parse_creation_time,
+    _parse_embedded_gps_lines,
+    _parse_embedded_gps_points,
+    _rebase_gps_points,
+    is_wide_gamut_source,
+)
 
 
 def test_manual_offset_uses_video_creation_time_when_available() -> None:
@@ -68,7 +73,7 @@ def test_relative_start_maps_zero_to_requested_gpx_time() -> None:
     assert resolved.gpx_point.longitude == 11.7
 
 
-def test_shift_hours_moves_video_time_before_matching_gpx() -> None:
+def test_shift_hours_no_longer_changes_sync_mapping() -> None:
     video = VideoMetadata(
         path=Path("video.mp4"),
         duration_seconds=60.0,
@@ -94,9 +99,9 @@ def test_shift_hours_moves_video_time_before_matching_gpx() -> None:
         shift_hours=-2.0,
     )
 
-    assert resolved.resolved_timestamp == datetime(2025, 1, 1, 12, 0, 1, tzinfo=timezone.utc)
+    assert resolved.resolved_timestamp == datetime(2025, 1, 1, 14, 0, 1, tzinfo=timezone.utc)
     assert resolved.gpx_point.longitude == 11.6
-    assert resolved.shift_hours == -2.0
+    assert resolved.shift_hours == 0.0
 
 
 def test_naive_video_creation_time_is_treated_as_local_time() -> None:
@@ -130,7 +135,7 @@ def test_naive_video_creation_time_is_treated_as_local_time() -> None:
     assert resolved.resolved_timestamp == expected_utc
 
 
-def test_gpx_first_uses_inverse_offset_direction() -> None:
+def test_offset_mode_uses_same_offset_direction_for_both_authorities() -> None:
     video = VideoMetadata(
         path=Path("video.mp4"),
         duration_seconds=60.0,
@@ -164,7 +169,8 @@ def test_gpx_first_uses_inverse_offset_direction() -> None:
         reference_mode=REFERENCE_GPX_FIRST,
     )
 
-    assert video_first.resolved_timestamp == gpx_first.resolved_timestamp
+    assert video_first.resolved_timestamp == datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)
+    assert gpx_first.resolved_timestamp == datetime(2025, 1, 1, 12, 0, 20, tzinfo=timezone.utc)
 
 
 def test_wide_gamut_detection_prefers_tiff_like_workflow() -> None:
@@ -212,3 +218,69 @@ def test_offset_mode_without_gpx_uses_video_timestamp_only() -> None:
 def test_parse_creation_time_supports_mediainfo_utc_format() -> None:
     parsed = _parse_creation_time("2024-12-31 13:40:45 UTC")
     assert parsed == datetime(2024, 12, 31, 13, 40, 45, tzinfo=timezone.utc)
+
+
+def test_parse_embedded_gps_points_reads_exiftool_json() -> None:
+    points = _parse_embedded_gps_points(
+        [
+            {
+                "GPSDateTime": "2025:07:19 09:12:43.100",
+                "GPSLatitude": 48.5602,
+                "GPSLongitude": 8.2202,
+                "GPSAltitude": 959.66,
+            }
+        ]
+    )
+    assert len(points) == 1
+    assert points[0].timestamp == datetime(2025, 7, 19, 9, 12, 43, 100000, tzinfo=timezone.utc)
+    assert points[0].latitude == 48.5602
+
+
+def test_parse_embedded_gps_lines_reads_multiple_points() -> None:
+    points = _parse_embedded_gps_lines(
+        "2025:07:19 09:12:43.000,48.560186,8.2201903,959.66\n"
+        "2025:07:19 09:12:43.100,48.5601865,8.2201897,959.596\n"
+    )
+    assert len(points) == 2
+    assert points[1].longitude == 8.2201897
+
+
+def test_embedded_gps_offset_can_start_before_video_timestamp() -> None:
+    video = VideoMetadata(
+        path=Path("video.mp4"),
+        duration_seconds=60.0,
+        width=3840,
+        height=2160,
+        fps=59.94,
+        creation_time=datetime(2025, 7, 19, 9, 13, 10, tzinfo=timezone.utc),
+        raw_format_name="mov,mp4",
+    )
+    gpx = GpxTrackIndex(
+        [
+            GpxPoint(datetime(2025, 7, 19, 9, 12, 43, tzinfo=timezone.utc), 48.56, 8.22, 959.66),
+            GpxPoint(datetime(2025, 7, 19, 9, 12, 44, tzinfo=timezone.utc), 48.57, 8.23, 958.0),
+        ]
+    )
+
+    resolved = resolve_frame_time(
+        0.0,
+        video,
+        gpx,
+        SYNC_MODE_OFFSET,
+        offset_seconds=-27.0,
+    )
+
+    assert resolved.gpx_point.timestamp == datetime(2025, 7, 19, 9, 12, 43, tzinfo=timezone.utc)
+
+
+def test_rebase_gps_points_aligns_embedded_track_to_video_start() -> None:
+    points = [
+        GpxPoint(datetime(2025, 4, 3, 16, 0, 14, 99000, tzinfo=timezone.utc), 49.08, 9.19, 196.0),
+        GpxPoint(datetime(2025, 4, 3, 16, 0, 15, 99000, tzinfo=timezone.utc), 49.09, 9.20, 197.0),
+    ]
+    rebased = _rebase_gps_points(
+        points,
+        datetime(2024, 8, 16, 14, 8, 59, tzinfo=timezone.utc),
+    )
+    assert rebased[0].timestamp == datetime(2024, 8, 16, 14, 8, 59, tzinfo=timezone.utc)
+    assert rebased[1].timestamp == datetime(2024, 8, 16, 14, 9, 0, tzinfo=timezone.utc)
