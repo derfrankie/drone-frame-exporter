@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QStackedLayout, QWidget
 
@@ -26,7 +28,7 @@ class MapPanel(QWidget):
 
     def set_track(self, gpx_index: GpxTrackIndex | None) -> None:
         self._fallback.set_track(gpx_index)
-        if gpx_index is not None:
+        if gpx_index is not None and _web_map_enabled():
             self._ensure_web_map()
 
     def set_markers(self, markers: list[dict]) -> None:
@@ -46,6 +48,8 @@ class MapPanel(QWidget):
         scrub_point: dict | None,
         track_key: str | None = None,
     ) -> None:
+        if not _web_map_enabled():
+            return
         self._ensure_web_map()
         if self._web_map is not None:
             self._web_map.set_map_state(
@@ -68,3 +72,10 @@ class MapPanel(QWidget):
         self._layout.setCurrentWidget(self._web_map)
         self._active = self._web_map
         self._web_map.pointScrubbed.connect(self.pointScrubbed)
+
+
+def _web_map_enabled() -> bool:
+    value = os.environ.get("DRONE_FRAME_EXTRACTOR_WEB_MAP", "").strip().lower()
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return True

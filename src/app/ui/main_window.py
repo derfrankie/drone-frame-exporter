@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 from app.services.presentation import build_track_markers, build_track_samples
 from app.ui.map_panel import MapPanel
 from core.errors import DroneFrameExtractorError
-from core.export import export_frames
+from core.export import export_frames, load_exported_frame_seconds
 from core.gpx import GpxTrackIndex, load_gpx_track
 from core.models import ExportFrameRequest, VideoMetadata
 from core.sync import (
@@ -83,6 +83,7 @@ class DroneFrameExtractorWindow(QMainWindow):
         self._current_track_key: str | None = None
         self._auto_embedded_offset_applied = False
         self._relative_start_override_utc: datetime | None = None
+        self._loaded_manifest_frames_video: Path | None = None
         self._map_sync_timer = QTimer(self)
         self._map_sync_timer.setSingleShot(True)
         self._map_sync_timer.timeout.connect(self._sync_map_state)
@@ -417,8 +418,13 @@ class DroneFrameExtractorWindow(QMainWindow):
             self.output_dir = Path(path)
             self.output_edit.setText(path)
             self.settings.setValue("last_output_dir", path)
+            self._loaded_manifest_frames_video = None
+            self._restore_exported_markers_for_current_video()
 
     def _load_video(self, path: Path) -> None:
+        previous_video = self.video_metadata.path if self.video_metadata is not None else None
+        if previous_video != path:
+            self._clear_marker_entries()
         self.statusBar().showMessage("Inspecting video metadata…")
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
@@ -441,6 +447,7 @@ class DroneFrameExtractorWindow(QMainWindow):
         self.statusBar().showMessage(f"Loaded video metadata: {path.name}  |  preparing first frame…")
         if self._gpx_source != "external":
             self._try_load_embedded_gpx(path)
+        self._restore_exported_markers_for_current_video()
         self._refresh_current_info()
 
     def _load_gpx(self, path: Path) -> None:
@@ -669,6 +676,28 @@ class DroneFrameExtractorWindow(QMainWindow):
             item = QListWidgetItem(f"Photo {index}  {marker.frame_seconds:.3f}s")
             self.marker_list.addItem(item)
         self._refresh_track_view()
+
+    def _clear_marker_entries(self) -> None:
+        self.marker_entries = []
+        self._loaded_manifest_frames_video = None
+        self._refresh_marker_list()
+
+    def _restore_exported_markers_for_current_video(self) -> None:
+        if self.video_metadata is None or self.output_dir is None:
+            return
+        if self._loaded_manifest_frames_video == self.video_metadata.path:
+            return
+
+        restored_frames = load_exported_frame_seconds(self.output_dir, self.video_metadata.path)
+        self._loaded_manifest_frames_video = self.video_metadata.path
+        if not restored_frames:
+            return
+
+        self.marker_entries = [MarkerEntry(frame_seconds=frame_seconds) for frame_seconds in restored_frames]
+        self._refresh_marker_list()
+        self.statusBar().showMessage(
+            f"Restored {len(restored_frames)} previously exported photo markers for {self.video_metadata.path.name}"
+        )
 
     def _refresh_from_sync_change(self) -> None:
         self._refresh_current_info()

@@ -38,23 +38,40 @@ class LeafletMapWidget(QWebEngineView):
         scrub_point: dict | None,
         track_key: str | None = None,
     ) -> None:
-        state = {
-            "trackPoints": track_points,
-            "markers": markers,
-            "currentPoint": current_point,
-            "scrubPoint": scrub_point,
-            "trackKey": track_key,
-        }
         if not self._loaded:
-            self._pending_state = state
+            self._pending_state = {
+                "track_points": track_points,
+                "markers": markers,
+                "current_point": current_point,
+                "scrub_point": scrub_point,
+                "track_key": track_key,
+            }
             return
-        self.page().runJavaScript(f"window.updateMapState({json.dumps(state)});")
+        self.page().runJavaScript(
+            f"window.updateMapState({json.dumps(_map_state_payload(track_points, markers, current_point, scrub_point, track_key))});"
+        )
 
     def _on_load_finished(self, ok: bool) -> None:
         self._loaded = ok
         if ok and self._pending_state is not None:
             self.set_map_state(**self._pending_state)
             self._pending_state = None
+
+
+def _map_state_payload(
+    track_points: list[dict],
+    markers: list[dict],
+    current_point: dict | None,
+    scrub_point: dict | None,
+    track_key: str | None,
+) -> dict:
+    return {
+        "trackPoints": track_points,
+        "markers": markers,
+        "currentPoint": current_point,
+        "scrubPoint": scrub_point,
+        "trackKey": track_key,
+    }
 
 
 def _leaflet_document() -> str:
@@ -86,10 +103,30 @@ def _leaflet_document() -> str:
   <script>
     let bridge = null;
     let map = L.map('map', { zoomControl: true, preferCanvas: true });
-    let tileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap contributors'
-    }).addTo(map);
+    });
+    const satelliteLayer = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      {
+        maxZoom: 19,
+        attribution:
+          'Tiles &copy; Esri, Maxar, Earthstar Geographics, and the GIS User Community'
+      }
+    );
+    const baseLayers = {
+      'OpenStreetMap': osmLayer,
+      'Satellite': satelliteLayer
+    };
+    let activeBaseLayerName = window.localStorage.getItem('drone-frame-extractor-basemap') || 'OpenStreetMap';
+    let activeBaseLayer = baseLayers[activeBaseLayerName] || osmLayer;
+    activeBaseLayer.addTo(map);
+    L.control.layers(baseLayers, {}, { collapsed: false }).addTo(map);
+    map.on('baselayerchange', function(event) {
+      activeBaseLayerName = event.name;
+      window.localStorage.setItem('drone-frame-extractor-basemap', activeBaseLayerName);
+    });
     let trackLayer = L.polyline([], { color: '#5f7686', weight: 3, opacity: 0.85 }).addTo(map);
     let markerLayer = L.layerGroup().addTo(map);
     let currentMarker = null;

@@ -103,6 +103,31 @@ def write_manifest(
     raise ValueError(f"Unsupported manifest format: {manifest_format}")
 
 
+def load_exported_frame_seconds(output_dir: Path, video_path: Path) -> list[float]:
+    if not output_dir.exists():
+        return []
+
+    matches: list[float] = []
+    seen: set[float] = set()
+    for manifest_path in _find_candidate_manifests(output_dir, video_path):
+        for record in _read_manifest_records(manifest_path):
+            if not _record_matches_video(record, video_path):
+                continue
+            frame_seconds = record.get("frame_seconds")
+            if frame_seconds is None:
+                continue
+            try:
+                normalized = round(float(frame_seconds), 3)
+            except (TypeError, ValueError):
+                continue
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            matches.append(normalized)
+
+    return sorted(matches)
+
+
 def _build_output_path(
     output_dir: Path,
     video_metadata: VideoMetadata,
@@ -160,6 +185,48 @@ def build_manifest_filename(original_stem: str, manifest_format: str, filename_m
         parts.append(middle)
     parts.append("export")
     return "_".join(parts) + f".{manifest_format}"
+
+
+def _find_candidate_manifests(output_dir: Path, video_path: Path) -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for pattern in (
+        f"{video_path.stem}_export.json",
+        f"{video_path.stem}_export.csv",
+        f"{video_path.stem}_*_export.json",
+        f"{video_path.stem}_*_export.csv",
+    ):
+        for path in sorted(output_dir.glob(pattern)):
+            if path in seen:
+                continue
+            seen.add(path)
+            candidates.append(path)
+    return sorted(candidates, key=lambda path: path.stat().st_mtime, reverse=True)
+
+
+def _read_manifest_records(manifest_path: Path) -> list[dict]:
+    if manifest_path.suffix.lower() == ".json":
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        return []
+
+    if manifest_path.suffix.lower() == ".csv":
+        with manifest_path.open("r", newline="", encoding="utf-8") as handle:
+            return list(csv.DictReader(handle))
+
+    return []
+
+
+def _record_matches_video(record: dict, video_path: Path) -> bool:
+    source_video = record.get("source_video")
+    if not source_video:
+        return False
+    try:
+        source_path = Path(str(source_video))
+    except TypeError:
+        return False
+    return source_path == video_path or source_path.name == video_path.name
 
 
 def _record_from_export(

@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
+from pathlib import Path
 
-from core.export import build_manifest_filename, build_output_filename
+from core.export import build_manifest_filename, build_output_filename, load_exported_frame_seconds
 from core.models import ExportedFrameRecord, GpxPoint
 from core.utils import format_exif_timestamp, format_filename_timestamp
 
@@ -80,3 +81,38 @@ def test_export_record_allows_missing_gpx_metadata() -> None:
         shift_hours=0.0,
     )
     assert record.to_dict()["gpx_timestamp"] is None
+
+
+def test_load_exported_frame_seconds_reads_json_manifest_for_matching_video(tmp_path) -> None:
+    manifest_path = tmp_path / "HOVER_X1PROMAX_0143_export.json"
+    manifest_path.write_text(
+        """[
+  {"source_video": "/Volumes/a/HOVER_X1PROMAX_0143.mp4", "frame_seconds": 12.5},
+  {"source_video": "/Volumes/a/HOVER_X1PROMAX_0143.mp4", "frame_seconds": 4.0},
+  {"source_video": "/Volumes/a/OTHER.mp4", "frame_seconds": 99.0}
+]""",
+        encoding="utf-8",
+    )
+
+    restored = load_exported_frame_seconds(tmp_path, Path("/Volumes/b/HOVER_X1PROMAX_0143.mp4"))
+
+    assert restored == [4.0, 12.5]
+
+
+def test_load_exported_frame_seconds_combines_matching_manifests(tmp_path) -> None:
+    (tmp_path / "HOVER_X1PROMAX_0143_export.json").write_text(
+        """[
+  {"source_video": "/Volumes/a/HOVER_X1PROMAX_0143.mp4", "frame_seconds": 12.5}
+]""",
+        encoding="utf-8",
+    )
+    (tmp_path / "HOVER_X1PROMAX_0143_hero_export.csv").write_text(
+        "source_video,frame_seconds\n"
+        "/Volumes/a/HOVER_X1PROMAX_0143.mp4,4.0\n"
+        "/Volumes/a/HOVER_X1PROMAX_0143.mp4,12.5\n",
+        encoding="utf-8",
+    )
+
+    restored = load_exported_frame_seconds(tmp_path, Path("/Volumes/a/HOVER_X1PROMAX_0143.mp4"))
+
+    assert restored == [4.0, 12.5]
