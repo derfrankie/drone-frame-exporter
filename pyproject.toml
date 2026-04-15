@@ -22,6 +22,9 @@ dependencies = [
 dev = [
   "pytest>=8.3,<9.0",
 ]
+macos-app = [
+  "py2app>=0.28,<1.0",
+]
 extras = [
   "pydantic>=2.9,<3.0",
   "Pillow>=10.4,<12.0",

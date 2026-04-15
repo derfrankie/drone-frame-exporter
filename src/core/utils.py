@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import shutil
 from datetime import datetime, timezone
+from pathlib import Path
 
 from core.errors import ToolMissingError
 
@@ -9,10 +11,26 @@ from core.errors import ToolMissingError
 def require_tool(name: str) -> str:
     path = shutil.which(name)
     if not path:
+        path = _find_tool_in_common_locations(name)
+    if not path:
         raise ToolMissingError(
             f"Required tool '{name}' was not found in PATH. Install it first."
         )
     return path
+
+
+def _find_tool_in_common_locations(name: str) -> str | None:
+    search_dirs = [
+        Path("/opt/homebrew/bin"),
+        Path("/usr/local/bin"),
+        Path("/usr/bin"),
+        Path("/bin"),
+    ]
+    for directory in search_dirs:
+        candidate = directory / name
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
 
 
 def ensure_utc(dt: datetime) -> datetime:

@@ -376,6 +376,29 @@ Run the UI directly from source:
 PYTHONPATH=src python -m app.main ui
 ```
 
+## macOS App Bundle
+
+Build a local `.app` bundle with `py2app`:
+
+```bash
+source .venv/bin/activate
+python -m pip install -e ".[macos-app]"
+python setup.py py2app
+```
+
+The built app will be placed in:
+
+```text
+dist/Drone Frame Extractor.app
+```
+
+Notes:
+
+- the bundle uses `src/app/macos_bundle.py` as the GUI entrypoint
+- Qt WebEngine helper/resource paths are configured at runtime in `src/app/ui/launcher.py`
+- the basemap still requires internet access for OpenStreetMap or satellite tiles
+- `ffmpeg` and `exiftool` are still expected on the target Mac unless you bundle them separately
+
 ## Roadmap
 
 - better playback performance for difficult codecs
