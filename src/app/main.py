@@ -10,7 +10,7 @@ from rich.table import Table
 from app.services.presentation import build_track_markers
 from core.errors import DroneFrameExtractorError
 from core.export import export_frames
-from core.gpx import load_gpx_track
+from core.gpx import load_track
 from core.map_preview import write_track_preview_html
 from core.models import ExportFrameRequest
 from core.sync import (
@@ -21,7 +21,7 @@ from core.sync import (
 )
 from core.video import inspect_video, is_wide_gamut_source, load_embedded_gps_track
 
-app = typer.Typer(help="Extract JPG frames from local drone videos and sync them with GPX tracks.")
+app = typer.Typer(help="Extract JPG frames from local drone videos and sync them with GPX/FIT tracks.")
 console = Console()
 
 
@@ -48,23 +48,30 @@ def inspect_video_command(video: Path = typer.Option(..., exists=True, dir_okay=
     console.print(table)
 
 
-@app.command("inspect-gpx")
-def inspect_gpx_command(gpx: Path = typer.Option(..., exists=True, dir_okay=False, file_okay=True)) -> None:
-    """Show basic GPX timing information."""
-    index = load_gpx_track(gpx)
-    table = Table(title="GPX Track Info")
+@app.command("inspect-track")
+def inspect_track_command(track: Path = typer.Option(..., exists=True, dir_okay=False, file_okay=True)) -> None:
+    """Show basic GPX/FIT timing information."""
+    index = load_track(track)
+    table = Table(title="Track Info")
     table.add_column("Field")
     table.add_column("Value")
+    table.add_row("Path", str(track))
     table.add_row("Start", index.start_time.isoformat())
     table.add_row("End", index.end_time.isoformat())
     table.add_row("Point Count", str(len(index.points)))
     console.print(table)
 
 
+@app.command("inspect-gpx")
+def inspect_gpx_command(gpx: Path = typer.Option(..., exists=True, dir_okay=False, file_okay=True)) -> None:
+    """Show basic GPX/FIT timing information."""
+    inspect_track_command(gpx)
+
+
 @app.command("export")
 def export_command(
     video: Path = typer.Option(..., exists=True, dir_okay=False, file_okay=True),
-    gpx: Path | None = typer.Option(None, exists=True, dir_okay=False, file_okay=True),
+    gpx: Path | None = typer.Option(None, exists=True, dir_okay=False, file_okay=True, help="Optional .gpx or .fit track."),
     output_dir: Path = typer.Option(..., "--out", file_okay=False, dir_okay=True),
     times: str | None = typer.Option(
         None,
@@ -96,7 +103,7 @@ def export_command(
         frame_values = _parse_frame_values(times=times, frame=frame)
         video_metadata = inspect_video(video)
         gpx_index = (
-            load_gpx_track(gpx)
+            load_track(gpx)
             if gpx is not None
             else load_embedded_gps_track(video, anchor_timestamp=video_metadata.creation_time)
         )
@@ -150,7 +157,7 @@ def export_command(
 @app.command("preview-map")
 def preview_map_command(
     video: Path = typer.Option(..., exists=True, dir_okay=False, file_okay=True),
-    gpx: Path = typer.Option(..., exists=True, dir_okay=False, file_okay=True),
+    gpx: Path = typer.Option(..., exists=True, dir_okay=False, file_okay=True, help=".gpx or .fit track."),
     out: Path = typer.Option(..., file_okay=True, dir_okay=False),
     times: str | None = typer.Option(
         None,
@@ -167,10 +174,10 @@ def preview_map_command(
         None, help="ISO-8601 timestamp for relative-start mode, for example 2025-06-01T08:30:00Z."
     ),
 ) -> None:
-    """Create a local HTML preview that places the video and selected frames on the GPX track."""
+    """Create a local HTML preview that places the video and selected frames on the track."""
     try:
         video_metadata = inspect_video(video)
-        gpx_index = load_gpx_track(gpx)
+        gpx_index = load_track(gpx)
         relative_start_time = _parse_iso_datetime(start_time) if start_time else None
         frame_values = _parse_frame_values(times=times, frame=None) if times else []
         markers = _build_preview_markers(
@@ -202,7 +209,7 @@ def preview_map_command(
 @app.command("ui")
 def ui_command(
     video: Path | None = typer.Option(None, exists=True, dir_okay=False, file_okay=True),
-    gpx: Path | None = typer.Option(None, exists=True, dir_okay=False, file_okay=True),
+    gpx: Path | None = typer.Option(None, exists=True, dir_okay=False, file_okay=True, help="Optional .gpx or .fit track."),
     out: Path | None = typer.Option(None, file_okay=False, dir_okay=True),
 ) -> None:
     """Launch the desktop UI for visual photo selection."""

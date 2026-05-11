@@ -37,7 +37,7 @@ from app.services.presentation import build_track_markers, build_track_samples
 from app.ui.map_panel import MapPanel
 from core.errors import DroneFrameExtractorError
 from core.export import export_frames, load_exported_frame_seconds
-from core.gpx import GpxTrackIndex, load_gpx_track
+from core.gpx import GpxTrackIndex, load_track
 from core.models import ExportFrameRequest, VideoMetadata
 from core.sync import (
     REFERENCE_GPX_FIRST,
@@ -126,7 +126,7 @@ class DroneFrameExtractorWindow(QMainWindow):
         outer.addWidget(splitter)
         self.setCentralWidget(root)
         self.setStatusBar(QStatusBar(self))
-        self.statusBar().showMessage("Load a video and GPX track to start.")
+        self.statusBar().showMessage("Load a video and GPX/FIT track to start.")
 
         self.setStyleSheet(
             """
@@ -194,7 +194,7 @@ class DroneFrameExtractorWindow(QMainWindow):
         files_layout.addWidget(self.video_path_edit, 0, 1)
         self.video_button = QPushButton("Choose…")
         files_layout.addWidget(self.video_button, 0, 2)
-        files_layout.addWidget(QLabel("GPX"), 1, 0)
+        files_layout.addWidget(QLabel("Track"), 1, 0)
         files_layout.addWidget(self.gpx_path_edit, 1, 1)
         self.gpx_button = QPushButton("Choose…")
         files_layout.addWidget(self.gpx_button, 1, 2)
@@ -224,6 +224,14 @@ class DroneFrameExtractorWindow(QMainWindow):
         self.start_time_edit.setCalendarPopup(True)
         self.start_time_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
         self.start_time_edit.setDateTime(datetime.utcnow())
+        self.sync_help_button = QPushButton("Sync Info")
+        self.sync_help_button.setToolTip("Open a short explanation of sync modes and timestamp authority.")
+        self.sync_mode_combo.setToolTip("How the app converts video frame seconds into track timestamps.")
+        self.reference_mode_combo.setToolTip("Choose which timeline should be trusted when aligning to the track cursor.")
+        self.offset_spin.setToolTip("Second-level correction added to the resolved timeline for map matching and GPS metadata.")
+        self.shift_hours_combo.setToolTip("Export-only timestamp correction. This does not move the map position.")
+        self.start_time_edit.setToolTip("Video start time used by relative-start mode.")
+        sync_form.addRow("", self.sync_help_button)
         sync_form.addRow("Mode", self.sync_mode_combo)
         sync_form.addRow("Timestamp Authority", self.reference_mode_combo)
         sync_form.addRow("Derived Offset", self.offset_spin)
@@ -275,7 +283,7 @@ class DroneFrameExtractorWindow(QMainWindow):
 
         header = QLabel("Visual Frame Selection")
         header.setStyleSheet("font-size: 26px; font-weight: 600; color: #f5f8fb;")
-        subtitle = QLabel("Scrub the video, preview the current frame location on the GPX track, and mark only the still photos you want.")
+        subtitle = QLabel("Scrub the video, preview the current frame location on the GPX/FIT track, and mark only the still photos you want.")
         subtitle.setWordWrap(True)
         subtitle.setStyleSheet("color: #98a8b5;")
 
@@ -333,7 +341,10 @@ class DroneFrameExtractorWindow(QMainWindow):
         self.gpx_scrub_slider = QSlider(Qt.Horizontal)
         self.gpx_scrub_slider.setRange(0, 0)
         self.gpx_scrub_label = QLabel("GPX Cursor: no track loaded")
-        self.align_button = QPushButton("Sync Current Video Frame To GPX Cursor")
+        self.align_button = QPushButton("Align Video to Track Cursor")
+        self.track_help_button = QPushButton("How Map Alignment Works")
+        self.track_help_button.setToolTip("Explain how to align the current video frame with the track cursor.")
+        self.align_button.setToolTip("Use the current video frame and current track cursor to derive the sync settings.")
         self.gpx_step_back_5_button = QPushButton("-5")
         self.gpx_step_back_1_button = QPushButton("-1")
         self.gpx_step_forward_1_button = QPushButton("+1")
@@ -351,6 +362,7 @@ class DroneFrameExtractorWindow(QMainWindow):
         layout.addLayout(gpx_transport)
         layout.addWidget(self.gpx_scrub_slider)
         layout.addWidget(self.gpx_scrub_label)
+        layout.addWidget(self.track_help_button)
         layout.addWidget(self.align_button)
         return widget
 
@@ -391,9 +403,11 @@ class DroneFrameExtractorWindow(QMainWindow):
         self.offset_spin.valueChanged.connect(self._refresh_from_sync_change)
         self.shift_hours_combo.currentIndexChanged.connect(self._refresh_from_sync_change)
         self.start_time_edit.dateTimeChanged.connect(self._on_relative_start_changed)
+        self.sync_help_button.clicked.connect(self._show_sync_help)
         self.export_button.clicked.connect(self._export_selected_frames)
         self.gpx_scrub_slider.valueChanged.connect(self._on_gpx_scrub_changed)
         self.align_button.clicked.connect(self._align_video_to_gpx_cursor)
+        self.track_help_button.clicked.connect(self._show_track_sync_help)
         self.gpx_step_back_5_button.clicked.connect(lambda: self._step_gpx_cursor(-5))
         self.gpx_step_back_1_button.clicked.connect(lambda: self._step_gpx_cursor(-1))
         self.gpx_step_forward_1_button.clicked.connect(lambda: self._step_gpx_cursor(1))
@@ -407,7 +421,7 @@ class DroneFrameExtractorWindow(QMainWindow):
             self._load_video(Path(path))
 
     def _choose_gpx(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Choose GPX", "", "GPX files (*.gpx);;All files (*)")
+        path, _ = QFileDialog.getOpenFileName(self, "Choose track", "", "Track files (*.gpx *.fit);;GPX files (*.gpx);;FIT files (*.fit);;All files (*)")
         if path:
             self.gpx_path_edit.setText(path)
             self._load_gpx(Path(path))
@@ -451,18 +465,18 @@ class DroneFrameExtractorWindow(QMainWindow):
         self._refresh_current_info()
 
     def _load_gpx(self, path: Path) -> None:
-        self.statusBar().showMessage("Loading GPX track…")
+        self.statusBar().showMessage("Loading track…")
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            self.gpx_index = load_gpx_track(path)
+            self.gpx_index = load_track(path)
         except DroneFrameExtractorError as exc:
-            QMessageBox.critical(self, "GPX Error", str(exc))
-            self.statusBar().showMessage("GPX loading failed.")
+            QMessageBox.critical(self, "Track Error", str(exc))
+            self.statusBar().showMessage("Track loading failed.")
             return
         finally:
             QApplication.restoreOverrideCursor()
         self.gpx_path_edit.setText(str(path))
-        self._load_track_index(self.gpx_index, source="external", status_label=f"Loaded GPX: {path.name}")
+        self._load_track_index(self.gpx_index, source="external", status_label=f"Loaded track: {path.name}")
 
     def _load_track_index(self, track_index: GpxTrackIndex, source: str, status_label: str) -> None:
         self.gpx_index = track_index
@@ -921,6 +935,60 @@ class DroneFrameExtractorWindow(QMainWindow):
         else:
             lines.append("Range status: inside GPX window")
         return lines
+
+    def _show_sync_help(self) -> None:
+        QMessageBox.information(
+            self,
+            "Sync Info",
+            "\n".join(
+                [
+                    "How sync works:",
+                    "",
+                    "The app starts with the video position in seconds. It converts that frame position into a real timestamp, then finds the nearest point on the loaded GPX/FIT track.",
+                    "",
+                    "Mode = offset:",
+                    "Uses the video's embedded creation time plus the current frame seconds, then adds Derived Offset. Use this when the video clock is basically right but shifted from the track.",
+                    "",
+                    "Mode = relative-start:",
+                    "Treats Relative Start as the timestamp for video frame 0. Current frame time is Relative Start plus frame seconds. Use this when the video has no trustworthy creation time.",
+                    "",
+                    "Mode = absolute-video:",
+                    "Uses the video's embedded creation time and frame seconds directly. Derived Offset is ignored. Use this when the video timestamp already matches the track.",
+                    "",
+                    "Timestamp Authority:",
+                    "Video means the video clock is trusted and cursor sync derives a second offset.",
+                    "GPX means the track clock is trusted and cursor sync derives a Relative Start timestamp for the video.",
+                    "",
+                    "Export Time Shift:",
+                    "Only changes the written export timestamp. It does not move the map point or change GPS matching.",
+                ]
+            ),
+        )
+
+    def _show_track_sync_help(self) -> None:
+        QMessageBox.information(
+            self,
+            "Track Sync Info",
+            "\n".join(
+                [
+                    "How to align with the map:",
+                    "",
+                    "1. Load a video and a GPX/FIT track.",
+                    "2. Scrub the video to a frame where you know the real location.",
+                    "3. Move the GPX Cursor on the map/slider to the matching track point.",
+                    "4. Click Align Video to Track Cursor.",
+                    "",
+                    "If Timestamp Authority is Video:",
+                    "The app keeps the video creation time as the base clock and writes the difference into Derived Offset.",
+                    "",
+                    "If Timestamp Authority is GPX:",
+                    "The app treats the track as correct and switches to relative-start mode. Relative Start becomes GPX cursor time minus current video frame seconds.",
+                    "",
+                    "After alignment:",
+                    "The yellow map point should follow the video frame position on the track. Selected photo markers use the same sync settings during export.",
+                ]
+            ),
+        )
 
     def _align_video_to_gpx_cursor(self) -> None:
         if self.video_metadata is None or self.gpx_index is None:

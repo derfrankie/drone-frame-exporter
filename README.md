@@ -1,11 +1,11 @@
 # Drone Frame Extractor
 
-Local-first desktop app for picking individual still frames from drone videos, aligning them against GPX tracks, and exporting the selected images with timestamp and GPS metadata.
+Local-first desktop app for picking individual still frames from drone videos, aligning them against GPX or FIT tracks, and exporting the selected images with timestamp and GPS metadata.
 
 The main workflow is visual:
 
 1. load a video
-2. optionally load a GPX track
+2. optionally load a GPX or FIT track
 3. scrub to the exact frames you want
 4. align video time against GPX time when needed
 5. export only the selected photos
@@ -19,12 +19,12 @@ This repository is an MVP with a working desktop UI and CLI.
 What already works:
 
 - local video loading
-- optional GPX loading
+- optional GPX/FIT loading
 - visual frame selection in a PySide6 UI
 - play/pause, scrubbing, and `1` / `5` frame stepping
 - `Video` and `GPX` timestamp authority modes
 - derived sync offset and export-only time shift controls
-- GPX cursor alignment on a zoomable OpenStreetMap view
+- GPX/FIT cursor alignment on a zoomable OpenStreetMap view
 - JPG export for standard footage
 - TIFF export for wide-gamut / HDR-like footage
 - EXIF timestamp writing and GPS tagging through `exiftool`
@@ -58,15 +58,15 @@ Current limitations:
   - separate export-only time shift from `-5 h` to `+5 h`
 - Map-based positioning
   - zoomable OpenStreetMap-based track view
-  - current video position on the GPX track
-  - GPX cursor scrubbing
-  - align current frame to GPX cursor
+  - current video position on the track
+  - track cursor scrubbing
+  - align current frame to the track cursor
 - Export pipeline
   - automatic export format selection
   - `jpg` for standard footage
   - `tiff` for detected wide-gamut / HDR-like footage
   - EXIF timestamp writing
-  - optional GPS metadata when GPX is loaded
+  - optional GPS metadata when a track is loaded
   - JSON or CSV manifest
   - custom filename middle segment
 
@@ -75,6 +75,7 @@ Current limitations:
 - Python 3.11+
 - PySide6
 - ffmpeg / ffprobe
+- fitparse
 - gpxpy
 - exiftool
 - typer
@@ -136,14 +137,14 @@ drone-frame-extractor ui \
   --out /path/to/output
 ```
 
-`--gpx` is optional. If no GPX is loaded, exports still work and use the resolved video timestamp plus the configured sync offset. `Export Time Shift` still affects only the written export time, not the map matching.
+`--gpx` accepts `.gpx` and `.fit` tracks and is optional. If no track is loaded, exports still work and use the resolved video timestamp plus the configured sync offset. `Export Time Shift` still affects only the written export time, not the map matching.
 
 ## Desktop UI Workflow
 
 ### 1. Load your files
 
 - choose a video
-- optionally choose a GPX file
+- optionally choose a GPX or FIT file
 - choose an output folder
 
 The UI remembers the last output folder you used.
@@ -181,9 +182,9 @@ Only marked frames are exported.
 
 ### 4. Align on the map
 
-When a GPX file is loaded, the map shows:
+When a GPX or FIT file is loaded, the map shows:
 
-- the GPX track on a real OpenStreetMap basemap
+- the track on a real OpenStreetMap basemap
 - the current resolved video position
 - the GPX cursor position
 - marker locations for selected photos
@@ -235,18 +236,20 @@ The CLI is useful for inspection, scripted export, and debugging the sync pipeli
 drone-frame-extractor inspect-video --video /path/to/video.mp4
 ```
 
-### Inspect GPX timing
+### Inspect track timing
 
 ```bash
-drone-frame-extractor inspect-gpx --gpx /path/to/track.gpx
+drone-frame-extractor inspect-track --track /path/to/track.gpx
 ```
 
-### Export selected frames with GPX
+`inspect-gpx --gpx /path/to/track.gpx` remains available as a compatibility alias and also accepts `.fit` files.
+
+### Export selected frames with a track
 
 ```bash
 drone-frame-extractor export \
   --video /path/to/video.mp4 \
-  --gpx /path/to/track.gpx \
+  --gpx /path/to/track.fit \
   --out /path/to/output \
   --times 12.5,44.2,91.0 \
   --sync-mode offset \

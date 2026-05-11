@@ -12,6 +12,7 @@ authors = [
   { name = "Codex" }
 ]
 dependencies = [
+  "fitparse>=1.2.0,<2.0.0",
   "gpxpy>=1.6.2,<2.0.0",
   "PySide6>=6.8,<7.0",
   "typer>=0.12.3,<1.0.0",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from bisect import bisect_left
 from datetime import datetime
+from importlib import import_module
 from pathlib import Path
 
 import gpxpy
@@ -84,6 +85,15 @@ class GpxTrackIndex:
         return samples
 
 
+def load_track(track_path: Path) -> GpxTrackIndex:
+    suffix = track_path.suffix.lower()
+    if suffix == ".gpx":
+        return load_gpx_track(track_path)
+    if suffix == ".fit":
+        return load_fit_track(track_path)
+    raise GpxError(f"Unsupported track file type: {track_path.suffix or 'none'}. Use .gpx or .fit.")
+
+
 def load_gpx_track(gpx_path: Path) -> GpxTrackIndex:
     if not gpx_path.exists():
         raise GpxError(f"GPX file does not exist: {gpx_path}")
@@ -110,3 +120,59 @@ def load_gpx_track(gpx_path: Path) -> GpxTrackIndex:
         raise GpxError("GPX file has no usable points with timestamps.")
 
     return GpxTrackIndex(points)
+
+
+def load_fit_track(fit_path: Path) -> GpxTrackIndex:
+    if not fit_path.exists():
+        raise GpxError(f"FIT file does not exist: {fit_path}")
+
+    try:
+        fitparse = import_module("fitparse")
+    except ImportError as exc:
+        raise GpxError("FIT support requires the optional dependency 'fitparse'. Reinstall the app dependencies.") from exc
+
+    points: list[GpxPoint] = []
+    try:
+        fit_file = fitparse.FitFile(str(fit_path))
+        for record in fit_file.get_messages("record"):
+            timestamp = record.get_value("timestamp")
+            latitude = _normalize_fit_coordinate(record.get_value("position_lat"))
+            longitude = _normalize_fit_coordinate(record.get_value("position_long"))
+            if timestamp is None or latitude is None or longitude is None:
+                continue
+            points.append(
+                GpxPoint(
+                    timestamp=ensure_utc(timestamp),
+                    latitude=latitude,
+                    longitude=longitude,
+                    elevation=_first_present(
+                        record.get_value("enhanced_altitude"),
+                        record.get_value("altitude"),
+                    ),
+                )
+            )
+    except GpxError:
+        raise
+    except Exception as exc:
+        raise GpxError(f"Could not read FIT file: {fit_path}") from exc
+
+    if not points:
+        raise GpxError("FIT file has no usable points with timestamps and coordinates.")
+
+    return GpxTrackIndex(points)
+
+
+def _normalize_fit_coordinate(value) -> float | None:
+    if value is None:
+        return None
+    coordinate = float(value)
+    if abs(coordinate) > 180.0:
+        coordinate = coordinate * (180.0 / 2**31)
+    return coordinate
+
+
+def _first_present(*values):
+    for value in values:
+        if value is not None:
+            return value
+    return None

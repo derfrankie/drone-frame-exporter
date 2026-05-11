@@ -22,6 +22,7 @@ OPTIONS = {
         "PySide6.QtWebChannel",
         "PySide6.QtWebEngineCore",
         "PySide6.QtWebEngineWidgets",
+        "fitparse",
         "gpxpy",
         "rich",
         "typer",
